@@ -5,6 +5,7 @@
 #include <Logging.h>
 #include <Memory.h>
 #include <Utf8.h>
+#include <VerticalText.h>
 
 #include <algorithm>
 #include <climits>
@@ -564,7 +565,7 @@ bool SdCardFont::load(const char* path) {
   }
 
   uint16_t fileVersion = readU16(headerBuf + 8);
-  if (fileVersion != CPFONT_VERSION) {
+  if (fileVersion != 4 && fileVersion != CPFONT_VERSION) {
     LOG_ERR("SDCF", "Unsupported version: %u (expected %u)", fileVersion, CPFONT_VERSION);
     return false;
   }
@@ -572,7 +573,12 @@ bool SdCardFont::load(const char* path) {
   // Begin content hash: accumulate global header
   uint32_t hash = fnv1a(headerBuf, HEADER_SIZE);
 
-  bool is2Bit = (readU16(headerBuf + 10) & 1) != 0;
+  const uint16_t flags = readU16(headerBuf + 10);
+  if (flags & ~(fileVersion == 5 ? 3 : 1)) {
+    LOG_ERR("SDCF", "Invalid font flags: %u", flags);
+    return false;
+  }
+  bool is2Bit = (flags & 1) != 0;
 
   uint8_t styleCount = headerBuf[12];
   if (styleCount == 0 || styleCount > MAX_STYLES) {
@@ -631,6 +637,55 @@ bool SdCardFont::load(const char* path) {
 
     uint32_t dataOffset = readU32(tocBuf + 24);
     computeStyleFileOffsets(s, dataOffset);
+    s.verticalFileOffset = fileVersion == 5 && (flags & 2) ? readU32(tocBuf + 28) : 0;
+  }
+
+  // Validate the small alternate table in place; it stays on SD rather than
+  // adding a second resident glyph table to every C3 font style.
+  for (auto& s : styles_) {
+    s.verticalGlyphCount = 0;
+    s.verticalBitmapOffset = 0;
+    if (!s.present || !s.verticalFileOffset) continue;
+    uint8_t count[2];
+    if (s.verticalFileOffset < s.bitmapFileOffset || !file.seekSet(s.verticalFileOffset) ||
+        file.read(count, sizeof(count)) != sizeof(count)) {
+      LOG_ERR("SDCF", "Invalid vertical section offset");
+      freeAll();
+      return false;
+    }
+    s.verticalGlyphCount = readU16(count);
+    if (s.verticalGlyphCount > 64) {
+      LOG_ERR("SDCF", "Invalid vertical glyph count");
+      freeAll();
+      return false;
+    }
+    const uint64_t bitmapOffset =
+        static_cast<uint64_t>(s.verticalFileOffset) + 2 + s.verticalGlyphCount * (4 + sizeof(EpdGlyph));
+    if (bitmapOffset > file.size()) {
+      LOG_ERR("SDCF", "Truncated vertical glyph table");
+      freeAll();
+      return false;
+    }
+    s.verticalBitmapOffset = static_cast<uint32_t>(bitmapOffset);
+    uint32_t previous = 0;
+    for (uint16_t j = 0; j < s.verticalGlyphCount; ++j) {
+      uint8_t record[4 + sizeof(EpdGlyph)];
+      if (file.read(record, sizeof(record)) != sizeof(record)) {
+        freeAll();
+        return false;
+      }
+      const uint32_t cp = readU32(record);
+      EpdGlyph glyph;
+      memcpy(&glyph, record + 4, sizeof(glyph));
+      const uint32_t expected = (static_cast<uint32_t>(glyph.width) * glyph.height * (is2Bit ? 2 : 1) + 7) / 8;
+      if (cp <= previous || !verticalText::alternate(cp) || glyph.dataLength != expected ||
+          bitmapOffset + glyph.dataOffset + glyph.dataLength > file.size()) {
+        LOG_ERR("SDCF", "Invalid vertical glyph record U+%04X", cp);
+        freeAll();
+        return false;
+      }
+      previous = cp;
+    }
   }
 
   styleCount_ = styleCount;
@@ -1754,23 +1809,39 @@ uint8_t SdCardFont::resolveStyleMask(uint8_t styleMask) const {
 
 const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   auto* oc = static_cast<OverflowContext*>(ctx);
-  auto* self = oc->self;
-  uint8_t styleIdx = oc->styleIdx;
+  return oc->self->loadOverflowGlyph(codepoint, oc->styleIdx, false);
+}
 
+const EpdGlyph* SdCardFont::getVerticalGlyph(uint32_t codepoint, uint8_t style) {
+  const uint8_t resolved = resolveStyle(style);
+  if (!verticalText::alternate(codepoint) || !styles_[resolved].verticalGlyphCount) return nullptr;
+  return loadOverflowGlyph(codepoint, resolved, true);
+}
+
+void SdCardFont::prewarmVertical(const char* text, uint8_t style) {
+  if (!text) return;
+  while (const auto cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
+    if (verticalText::alternate(cp)) getVerticalGlyph(cp, style);
+  }
+}
+
+const EpdGlyph* SdCardFont::loadOverflowGlyph(uint32_t codepoint, uint8_t styleIdx, bool vertical) {
+  auto* self = this;
   if (!self->loaded_ || styleIdx >= MAX_STYLES || !self->styles_[styleIdx].present) return nullptr;
   const auto& s = self->styles_[styleIdx];
   if (!s.fullIntervals && !s.bmpIntervals) return nullptr;
 
   // Check overflow cache first (matching both codepoint and style)
   for (uint32_t i = 0; i < self->overflowCount_; i++) {
-    if (self->overflow_[i].codepoint == codepoint && self->overflow_[i].styleIdx == styleIdx) {
+    if (self->overflow_[i].codepoint == codepoint && self->overflow_[i].styleIdx == styleIdx &&
+        self->overflow_[i].vertical == vertical) {
       return &self->overflow_[i].glyph;
     }
   }
 
   // Look up global glyph index via full intervals
-  int32_t globalIdx = self->findGlobalGlyphIndex(s, codepoint);
-  if (globalIdx < 0) return nullptr;
+  int32_t globalIdx = vertical ? -1 : self->findGlobalGlyphIndex(s, codepoint);
+  if (!vertical && globalIdx < 0) return nullptr;
 
   // Pick overflow slot (ring buffer). Read into temporaries first so the
   // existing slot stays valid if SD I/O fails. Bookkeeping (count/next)
@@ -1786,7 +1857,32 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   }
 
   EpdGlyph tempGlyph = {};
-  uint32_t glyphFileOff = s.glyphsFileOffset + static_cast<uint32_t>(globalIdx) * sizeof(EpdGlyph);
+  uint32_t glyphFileOff;
+  if (vertical) {
+    uint16_t lo = 0, hi = s.verticalGlyphCount;
+    while (lo < hi) {
+      const uint16_t mid = lo + (hi - lo) / 2;
+      uint8_t cpBytes[4];
+      if (!file.seekSet(s.verticalFileOffset + 2 + mid * (4 + sizeof(EpdGlyph))) ||
+          file.read(cpBytes, sizeof(cpBytes)) != sizeof(cpBytes)) {
+        LOG_ERR("SDCF", "Failed to read vertical glyph index");
+        return nullptr;
+      }
+      const uint32_t cp = readU32(cpBytes);
+      if (cp < codepoint)
+        lo = mid + 1;
+      else if (cp > codepoint)
+        hi = mid;
+      else {
+        globalIdx = mid;
+        break;
+      }
+    }
+    if (globalIdx < 0) return nullptr;
+    glyphFileOff = s.verticalFileOffset + 2 + globalIdx * (4 + sizeof(EpdGlyph)) + 4;
+  } else {
+    glyphFileOff = s.glyphsFileOffset + static_cast<uint32_t>(globalIdx) * sizeof(EpdGlyph);
+  }
   if (!file.seekSet(glyphFileOff)) {
     LOG_ERR("SDCF", "Overflow: failed to seek to glyph for U+%04X style %u", codepoint, styleIdx);
     file.close();
@@ -1805,7 +1901,7 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
       LOG_ERR("SDCF", "Overflow: failed to allocate %u bytes for U+%04X bitmap", tempGlyph.dataLength, codepoint);
       return nullptr;
     }
-    if (!file.seekSet(s.bitmapFileOffset + tempGlyph.dataOffset)) {
+    if (!file.seekSet((vertical ? s.verticalBitmapOffset : s.bitmapFileOffset) + tempGlyph.dataOffset)) {
       LOG_ERR("SDCF", "Overflow: failed to seek to bitmap for U+%04X", codepoint);
       psramDeleteArray(tempBitmap);
       file.close();
@@ -1829,6 +1925,7 @@ const EpdGlyph* SdCardFont::onGlyphMiss(void* ctx, uint32_t codepoint) {
   self->overflow_[slot].bitmap = tempBitmap;
   self->overflow_[slot].codepoint = codepoint;
   self->overflow_[slot].styleIdx = styleIdx;
+  self->overflow_[slot].vertical = vertical;
 
   LOG_DBG("SDCF", "Overflow: loaded U+%04X style %u on demand (slot %u/%u)", codepoint, styleIdx, slot,
           OVERFLOW_CAPACITY);

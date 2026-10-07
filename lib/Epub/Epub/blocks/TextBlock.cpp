@@ -6,6 +6,7 @@
 #include <Memory.h>
 #include <MemoryManager.h>
 #include <Serialization.h>
+#include <Utf8.h>
 
 #include <cstring>
 
@@ -136,6 +137,50 @@ bool TextBlock::hasRuby() const {
 void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int x, const int y) const {
   if (!isValid) {
     LOG_ERR("TXB", "Render skipped: invalid block");
+    return;
+  }
+  if (isVertical()) {
+    const int cell = blockStyle.verticalCellSize;
+    for (uint16_t i = 0; i < numWords; ++i) {
+      const int yy = y + wordYpos(i);
+      const auto style = wordStyle(i);
+      const char* text = wordText(i);
+      const uint8_t boundary = focusBoundary(i);
+      if (boundary && verticalText::classify(text) == verticalText::Behavior::Sideways) {
+        char prefix[40];
+        const size_t bytes = std::min<size_t>(boundary, sizeof(prefix) - 1);
+        memcpy(prefix, text, bytes);
+        prefix[bytes] = '\0';
+        renderer.drawVerticalToken(fontId, x, yy, prefix,
+                                   static_cast<EpdFontFamily::Style>(style | EpdFontFamily::BOLD), cell,
+                                   blockStyle.verticalCharSpacing, true, false, true);
+        renderer.drawVerticalToken(fontId, x, yy + focusSuffixX(i), text + bytes, style, cell,
+                                   blockStyle.verticalCharSpacing, true, false, true);
+      } else {
+        renderer.drawVerticalToken(fontId, x, yy, text, style, cell, blockStyle.verticalCharSpacing);
+      }
+      if (i < rubyTexts.size() && !rubyTexts[i].empty()) {
+        uint16_t end = i + 1;
+        while (end < numWords && (wordStyle(end) & EpdFontFamily::RUBY_CONTINUE) != 0) ++end;
+        const int baseExtent = wordYpos(end - 1) - wordYpos(i) + wordFlowExtent(renderer, fontId, end - 1);
+
+        // Ruby is upright even when an annotation contains ASCII digits.
+        const auto* ptr = reinterpret_cast<const uint8_t*>(rubyTexts[i].c_str());
+        int count = 0;
+        while (utf8NextCodepoint(&ptr)) ++count;
+        const int rubyCell = std::max(1, std::min(cell / 2, baseExtent / std::max(1, count)));
+        const int rubyHeight = count * rubyCell;
+        const int rubyY = yy + std::max(0, (baseExtent - rubyHeight) / 2);
+        renderer.drawVerticalToken(fontId, x + cell, rubyY, rubyTexts[i].c_str(), EpdFontFamily::SUP, rubyCell, 0, true,
+                                   true);
+      }
+      if (!renderer.isFontCacheScanning() && EpdFontFamily::hasTextDecoration(style)) {
+        const int extent = wordFlowExtent(renderer, fontId, i);
+        if ((style & EpdFontFamily::UNDERLINE) != 0) renderer.drawLine(x - 1, yy, x - 1, yy + extent, 1, true);
+        if ((style & EpdFontFamily::STRIKETHROUGH) != 0)
+          renderer.drawLine(x + cell / 2, yy, x + cell / 2, yy + extent, 1, true);
+      }
+    }
     return;
   }
   const int8_t tracking = blockStyle.characterSpacing;
@@ -343,6 +388,9 @@ bool TextBlock::serialize(HalFile& file) const {
   serialization::writePod(file, blockStyle.isRtl);
   serialization::writePod(file, blockStyle.directionDefined);
   serialization::writePod(file, blockStyle.characterSpacing);
+  serialization::writePod(file, blockStyle.vertical);
+  serialization::writePod(file, blockStyle.verticalCellSize);
+  serialization::writePod(file, blockStyle.verticalCharSpacing);
 
   return true;
 }
@@ -442,6 +490,25 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
   serialization::readPod(file, blockStyle.isRtl);
   serialization::readPod(file, blockStyle.directionDefined);
   serialization::readPod(file, blockStyle.characterSpacing);
+  uint8_t vertical = UINT8_MAX;
+  serialization::readPod(file, vertical);
+  serialization::readPod(file, blockStyle.verticalCellSize);
+  serialization::readPod(file, blockStyle.verticalCharSpacing);
+  if (vertical > 1 || blockStyle.verticalCharSpacing > 50 || (vertical && blockStyle.verticalCellSize == 0)) {
+    LOG_ERR("TXB", "Invalid vertical geometry");
+    return nullptr;
+  }
+  blockStyle.vertical = vertical != 0;
 
   return block;
+}
+
+int TextBlock::wordFlowExtent(const GfxRenderer& renderer, const int fontId, const uint16_t i) const {
+  if (!isVertical()) return renderer.getTextAdvanceX(fontId, wordText(i), wordStyle(i), blockStyle.characterSpacing);
+  if (focusBoundary(i) && verticalText::classify(wordText(i)) == verticalText::Behavior::Sideways)
+    return focusSuffixX(i) + renderer.getVerticalTextAdvance(fontId, wordText(i) + focusBoundary(i), wordStyle(i),
+                                                             blockStyle.verticalCellSize,
+                                                             blockStyle.verticalCharSpacing, true);
+  return renderer.getVerticalTextAdvance(fontId, wordText(i), wordStyle(i), blockStyle.verticalCellSize,
+                                         blockStyle.verticalCharSpacing);
 }

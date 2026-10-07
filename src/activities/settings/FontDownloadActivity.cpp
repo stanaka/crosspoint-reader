@@ -177,6 +177,13 @@ bool FontDownloadActivity::fetchAndParseManifest() {
   // those plain-HTTP downloads.
   auto result = HttpDownloader::downloadToFile(FONT_MANIFEST_URL, MANIFEST_TMP, nullptr);
   if (result != HttpDownloader::OK) {
+    static constexpr const char* V4_MANIFEST =
+        "https://github.com/crosspoint-reader/crosspoint-fonts/releases/download/"
+        "sd-fonts-m" FONT_MANIFEST_URL_STRINGIFY(FONTS_MANIFEST_VERSION) "-b4/fonts.json";
+    Storage.remove(MANIFEST_TMP);
+    result = HttpDownloader::downloadToFile(V4_MANIFEST, MANIFEST_TMP, nullptr);
+  }
+  if (result != HttpDownloader::OK) {
     LOG_ERR("FONT", "Failed to fetch manifest from %s", FONT_MANIFEST_URL);
     errorMessage_ = "Failed to fetch font list";
     Storage.remove(MANIFEST_TMP);

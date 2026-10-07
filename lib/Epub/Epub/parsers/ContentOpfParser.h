@@ -1,5 +1,6 @@
 #pragma once
 #include <Print.h>
+#include <VerticalText.h>
 
 #include <algorithm>
 #include <deque>
@@ -90,6 +91,7 @@ class ContentOpfParser final : public Print {
   std::string asin;
   std::string series;
   std::optional<float> seriesIndex;
+  PageProgression pageProgression = PageProgression::Default;
   std::string tocNcxPath;
   std::string tocNavPath;  // EPUB 3 nav document path
   std::string coverItemHref;

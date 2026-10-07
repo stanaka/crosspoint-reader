@@ -99,6 +99,10 @@ class ParsedText {
                    const std::vector<size_t>& lineBreakIndices,
                    const std::function<void(std::unique_ptr<TextBlock>, uint32_t)>& processLine,
                    const GfxRenderer& renderer, int fontId);
+  void prepareLayoutFont(const GfxRenderer& renderer, int fontId);
+  bool splitVerticalWord(size_t index, const GfxRenderer& renderer, int fontId, int height, int cellSize,
+                         char* scratch);
+  void consumeWords(size_t count);
   std::vector<uint16_t> calculateWordWidths(const GfxRenderer& renderer, int fontId);
 
  public:
@@ -130,6 +134,9 @@ class ParsedText {
   // True once any word was dropped because the text arena could not allocate.
   // Callers must treat the block as incomplete and fail the section build.
   bool hadDroppedWords() const { return droppedWords; }
+  void layoutVerticalColumns(const GfxRenderer& renderer, int fontId, uint16_t height, uint8_t spacing,
+                             const std::function<void(std::unique_ptr<TextBlock>, uint32_t)>& processColumn,
+                             bool includeLastColumn = true);
   void layoutAndExtractLines(const GfxRenderer& renderer, int fontId, uint16_t viewportWidth,
                              const std::function<void(std::unique_ptr<TextBlock>, uint32_t)>& processLine,
                              bool includeLastLine = true, int8_t characterSpacing = 0,

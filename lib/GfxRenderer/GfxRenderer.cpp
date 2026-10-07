@@ -16,6 +16,7 @@
 #include "../Memory/Memory.h"
 #include "FontCacheManager.h"
 #include "GlyphBitmap.h"
+#include "VerticalText.h"
 
 namespace {
 constexpr int trackingBetween(const uint32_t leftCp, const uint32_t rightCp, const int8_t tracking) {
@@ -2489,5 +2490,190 @@ void GfxRenderer::getOrientedViewableTRBL(int* outTop, int* outRight, int* outBo
       *outBottom = vi.left;
       *outLeft = vi.top;
       break;
+  }
+}
+
+int GfxRenderer::getVerticalCellSize(const int fontId, const EpdFontFamily::Style style) const {
+  const auto it = fontMap.find(resolveTextFontId(fontId, "一", style));
+  if (it == fontMap.end()) return std::max(1, getLineHeight(fontId));
+  const auto* glyph = it->second.getGlyph(0x4e00, style);
+  return std::max(1, glyph ? fp4::toPixel(glyph->advanceX) : getLineHeight(fontId));
+}
+
+int GfxRenderer::getVerticalTextAdvance(const int fontId, const char* text, const EpdFontFamily::Style style,
+                                        const int cellSize, const uint8_t spacing, const bool forceSideways) const {
+  if (!text || !*text) return 0;
+  const auto behavior = forceSideways ? verticalText::Behavior::Sideways : verticalText::classify(text);
+  if (behavior == verticalText::Behavior::TateChuYoko) return cellSize;
+  if (behavior == verticalText::Behavior::Sideways) {
+    const int resolved = resolveTextFontId(fontId, text, style);
+    const auto sd = sdCardFonts_.find(resolved);
+    if (sd == sdCardFonts_.end() || !sd->second) return getTextAdvanceX(fontId, text, style);
+    const auto font = fontMap.find(resolved);
+    if (font == fontMap.end()) return 0;
+    int32_t advance = 0;
+    const uint8_t resolvedStyle = sd->second->resolveStyle(static_cast<uint8_t>(style));
+    while (const auto cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
+      if (utf8IsCombiningMark(cp)) continue;
+      int32_t step = sd->second->getAdvance(cp, resolvedStyle);
+      if (!step) {
+        EpdGlyph fallback;
+        const auto* glyph = font->second.getGlyphMetrics(cp, fallback, style);
+        step = glyph ? glyph->advanceX : 0;
+      }
+      if (style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) step = (step + 1) / 2;
+      advance += step;
+    }
+    return fp4::toPixel(advance);
+  }
+  int count = 0;
+  while (const auto cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
+    if (!utf8IsCombiningMark(cp)) ++count;
+  }
+  return count * cellSize + std::max(0, count - 1) * cellSize * spacing / 100;
+}
+
+namespace {
+// Scale only the glyph being painted, using a small sampling accumulator.
+// Unscaled glyphs keep the oriented/clipped bitmap fast path; no rotated
+// bitmap or framebuffer is allocated.
+void drawVerticalGlyph(const GfxRenderer& renderer, const uint8_t* bitmap, const EpdGlyph& glyph,
+                       const EpdFontData& data, glyphBitmap::Frame frame, const int scale, const bool black) {
+  auto mode = renderer.grayPlanesAreAbsolute() ? GfxRenderer::BW : renderer.getRenderMode();
+  if (scale == 256) {
+    renderer.drawGlyphBitmap(bitmap, glyph.width, glyph.height, frame, data.is2Bit, mode, black);
+    return;
+  }
+  const int width = std::max(1, (glyph.width * scale + 255) / 256);
+  const int height = std::max(1, (glyph.height * scale + 255) / 256);
+  for (int y = 0; y < height; ++y) {
+    for (int x = 0; x < width; ++x) {
+      uint8_t ink = 0;
+      const int syEnd = std::min<int>(glyph.height, ((y + 1) * 256 + scale - 1) / scale);
+      const int sxEnd = std::min<int>(glyph.width, ((x + 1) * 256 + scale - 1) / scale);
+      for (int sy = y * 256 / scale; sy < syEnd; ++sy) {
+        for (int sx = x * 256 / scale; sx < sxEnd; ++sx) {
+          const int bit = sy * glyph.width + sx;
+          const uint8_t raw = data.is2Bit ? (bitmap[bit >> 2] >> (6 - (bit & 3) * 2)) & 3
+                                          : ((bitmap[bit >> 3] >> (7 - (bit & 7))) & 1 ? 3 : 0);
+          ink = std::max(ink, raw);
+        }
+      }
+      const bool paint = !data.is2Bit || mode == GfxRenderer::BW ? ink != 0
+                         : mode == GfxRenderer::GRAYSCALE_MSB    ? ink == 1 || ink == 2
+                                                                 : ink == 2;
+      if (paint)
+        renderer.drawPixel(frame.x + x * frame.dxX + y * frame.dyX, frame.y + x * frame.dxY + y * frame.dyY,
+                           !data.is2Bit || mode == GfxRenderer::BW ? black : false);
+    }
+  }
+}
+}  // namespace
+
+void GfxRenderer::drawVerticalToken(const int fontId, const int x, const int y, const char* text,
+                                    const EpdFontFamily::Style style, const int cellSize, const uint8_t spacing,
+                                    const bool black, const bool forceUpright, const bool forceSideways) const {
+  if (!text || !*text) return;
+  const int resolved = resolveTextFontId(fontId, text, style);
+  if (isFontCacheScanning()) {
+    fontCacheManager_->recordText(text, resolved, style, !forceUpright);
+    return;
+  }
+  if (resolved != fontId) ensureSdGlyphsResident(resolved, text, style, false);
+  const auto it = fontMap.find(resolved);
+  if (it == fontMap.end()) {
+    LOG_ERR("GFX", "Vertical font %d unavailable", resolved);
+    return;
+  }
+  const auto& font = it->second;
+  const auto sd = sdCardFonts_.find(resolved);
+  // SD layout uses the advance-only table. Keep the same metrics after a
+  // page prewarm installs kern/lig tables, and when reopening a cached page.
+  const bool advanceOnly = sd != sdCardFonts_.end() && sd->second;
+
+  const auto* data = font.getData(style);
+  if (!data) return;
+  const auto behavior = forceUpright    ? verticalText::Behavior::Upright
+                        : forceSideways ? verticalText::Behavior::Sideways
+                                        : verticalText::classify(text);
+  int scale = (style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0 ? 128 : 256;
+  if (forceUpright) scale = std::max(1, std::min(scale, cellSize * 256 / getVerticalCellSize(fontId)));
+  int textWidth = behavior == verticalText::Behavior::TateChuYoko ? getTextAdvanceX(resolved, text, style) : 0;
+  if (advanceOnly && behavior == verticalText::Behavior::TateChuYoko) {
+    int32_t total = 0;
+    const char* cursor = text;
+    while (const auto cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&cursor))) {
+      EpdGlyph fallback;
+      const auto* glyph = font.getGlyphMetrics(cp, fallback, style);
+      if (glyph)
+        total += (style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) ? (glyph->advanceX + 1) / 2 : glyph->advanceX;
+    }
+    textWidth = fp4::toPixel(total);
+  }
+  if (textWidth > cellSize) scale = std::max(1, scale * cellSize / textWidth);
+  int cursor = 0, previousCursor = 0;
+  int32_t previousAdvance = 0, cursorFP = 0;
+  uint32_t previous = 0;
+  while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
+    if (behavior != verticalText::Behavior::Upright && !advanceOnly) cp = font.applyLigatures(cp, text, style);
+    const EpdGlyph* alternate = nullptr;
+    if (behavior == verticalText::Behavior::Upright && sd != sdCardFonts_.end() && sd->second)
+      alternate = sd->second->getVerticalGlyph(cp, static_cast<uint8_t>(style));
+    EpdGlyph fallback;
+    const auto* glyph = alternate ? alternate : font.getGlyphMetrics(cp, fallback, style);
+    if (!glyph) continue;
+    const bool sideways =
+        behavior == verticalText::Behavior::Sideways ||
+        (behavior == verticalText::Behavior::Upright && !alternate && verticalText::alternate(cp) && cp != 0x3001 &&
+         cp != 0x3002 && cp != 0xff0c && cp != 0xff0e && cp != 0xff01 && cp != 0xff1f);
+    const bool combining = utf8IsCombiningMark(cp);
+    if (previous && behavior != verticalText::Behavior::Upright && !combining) {
+      if (advanceOnly) {
+        cursorFP += previousAdvance;
+        cursor = fp4::toPixel(cursorFP);
+      } else {
+        const int32_t kern = static_cast<int32_t>(font.getKerning(previous, cp, style)) * scale / 256;
+        cursor += fp4::toPixel(previousAdvance + kern);
+      }
+    }
+    const int drawCursor = combining ? previousCursor : cursor;
+    const int w = (glyph->width * scale + 255) / 256;
+    const int h = (glyph->height * scale + 255) / 256;
+    const int left = glyph->left * scale / 256;
+    const int top = glyph->top * scale / 256;
+    const int ascender = data->ascender * scale / 256;
+    const int descender = data->descender * scale / 256;
+    const int advance = fp4::toPixel(static_cast<int32_t>(glyph->advanceX) * scale / 256);
+    glyphBitmap::Frame frame;
+    if (sideways) {
+      frame = {x + (cellSize - ascender + descender) / 2 + top - 1, y + drawCursor + left, 0, 1, -1, 0};
+    } else if (behavior == verticalText::Behavior::TateChuYoko) {
+      frame = {x + (cellSize - std::min(cellSize, textWidth)) / 2 + drawCursor + left,
+               y + (cellSize - ascender + descender) / 2 + ascender - top,
+               1,
+               0,
+               0,
+               1};
+    } else {
+      frame = {x + (cellSize - advance) / 2 + left,
+               y + drawCursor + (cellSize - ascender + descender) / 2 + ascender - top,
+               1,
+               0,
+               0,
+               1};
+      if (!alternate && (cp == 0x3001 || cp == 0x3002 || cp == 0xff0c || cp == 0xff0e || verticalText::smallKana(cp)))
+        frame = {x + cellSize - w, y + drawCursor, 1, 0, 0, 1};
+    }
+    if (glyph == &fallback) {
+      fillRect(sideways ? frame.x - h + 1 : frame.x, frame.y, sideways ? h : w, sideways ? w : h, black);
+    } else if (const auto* bitmap = getGlyphBitmap(data, glyph)) {
+      drawVerticalGlyph(*this, bitmap, *glyph, *data, frame, scale, black);
+    }
+    if (!combining) {
+      previousCursor = cursor;
+      if (behavior == verticalText::Behavior::Upright) cursor += cellSize + cellSize * spacing / 100;
+      previousAdvance = (static_cast<int32_t>(glyph->advanceX) * scale + 128) / 256;
+      previous = cp;
+    }
   }
 }

@@ -467,3 +467,76 @@ TEST(SdCardFontTest, AnEmptyOrFailedAdvanceBuildLeavesNoTable) {
   ASSERT_EQ(0, font.buildAdvanceTable(page(FIRST, 10).c_str(), 1));
   EXPECT_TRUE(font.hasAdvanceTable());
 }
+
+namespace {
+size_t addVerticalGlyph(uint32_t codepoint = 0x3001) {
+  const size_t offset = sdFontTestFile.size();
+  sdFontTestFile.resize(offset + 2 + 4 + sizeof(EpdGlyph) + 2);
+  put16(10, 2);  // 1-bit font with vertical alternates
+  put32(60, offset);
+  put16(offset, 1);
+  put32(offset + 2, codepoint);
+  EpdGlyph glyph{};
+  glyph.width = 4;
+  glyph.height = 4;
+  glyph.advanceX = 8 << 4;
+  glyph.top = 4;
+  glyph.dataLength = 2;
+  std::memcpy(sdFontTestFile.data() + offset + 6, &glyph, sizeof(glyph));
+  sdFontTestFile[sdFontTestFile.size() - 2] = 0xA5;
+  sdFontTestFile[sdFontTestFile.size() - 1] = 0x5A;
+  return offset;
+}
+}  // namespace
+
+TEST(SdCardFontVertical, VersionFourRemainsReadable) {
+  makeFont();
+  put16(8, 4);
+  SdCardFont font;
+  ASSERT_TRUE(font.load("test.cpfont"));
+  EXPECT_EQ(font.getVerticalGlyph(0x3001), nullptr);
+  ASSERT_EQ(0, font.prewarm(page(FIRST, 1).c_str(), 1, false, false, false));
+  expectPageBitmaps(font, FIRST, 1);
+}
+
+TEST(SdCardFontVertical, AlternatesUseTheSharedCacheAndMissingFormsFallBack) {
+  makeFont();
+  addVerticalGlyph();
+  SdCardFont font;
+  ASSERT_TRUE(font.load("test.cpfont"));
+  const auto* alternate = font.getVerticalGlyph(0x3001, 1);
+  ASSERT_NE(alternate, nullptr);
+  EXPECT_EQ(alternate->width, 4);
+  ASSERT_NE(font.getOverflowBitmap(alternate), nullptr);
+  EXPECT_EQ(font.getOverflowBitmap(alternate)[0], 0xA5);
+  const size_t reads = sdFontTestReads;
+  EXPECT_EQ(font.getVerticalGlyph(0x3001), alternate);
+  EXPECT_EQ(sdFontTestReads, reads);
+  EXPECT_EQ(font.getVerticalGlyph(0x3002), nullptr);
+  font.releaseResidentCaches();
+  EXPECT_NE(font.getVerticalGlyph(0x3001), nullptr);
+}
+
+TEST(SdCardFontVertical, RejectsCorruptAlternateTablesBeforeDrawing) {
+  for (int fault = 0; fault < 5; ++fault) {
+    makeFont();
+    const size_t offset = addVerticalGlyph();
+    if (fault == 0) put16(offset, 65);
+    if (fault == 1) put32(offset + 2, 'A');
+    if (fault == 2) sdFontTestFile.pop_back();
+    if (fault == 3) put32(offset + 6 + 12, 0xFFFFFFF0);
+    if (fault == 4) put32(60, 1);
+    SdCardFont font;
+    EXPECT_FALSE(font.load("test.cpfont")) << fault;
+  }
+}
+
+TEST(SdCardFontVertical, BitmapAllocationFailureReturnsFallbackAndCanRetry) {
+  makeFont();
+  addVerticalGlyph();
+  SdCardFont font;
+  ASSERT_TRUE(font.load("test.cpfont"));
+  failNextArraySize = 2;
+  EXPECT_EQ(font.getVerticalGlyph(0x3001), nullptr);
+  EXPECT_NE(font.getVerticalGlyph(0x3001), nullptr);
+}

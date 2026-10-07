@@ -16,7 +16,7 @@
 // lib/EpdFont/scripts/cpfont_version.py. This firmware-side copy must be
 // bumped manually when the firmware is updated to support a new format.
 // Reader enforcement: SdCardFont::load().
-#define CPFONT_VERSION 4
+#define CPFONT_VERSION 5
 
 class SdCardFont {
  public:
@@ -36,7 +36,7 @@ class SdCardFont {
   SdCardFont& operator=(SdCardFont&&) = delete;
 
   // Load .cpfont file: reads header + intervals into RAM, records file layout offsets.
-  // Supports v4 (multi-style) format.
+  // Supports v4 and v5 (optional vertical alternates) multi-style formats.
   // Returns true on success.
   bool load(const char* path);
 
@@ -129,6 +129,9 @@ class SdCardFont {
   // Used by GfxRenderer::getGlyphBitmap() to recover the SdCardFont from EpdFontData::glyphMissCtx.
   static SdCardFont* fromMissCtx(void* ctx);
 
+  const EpdGlyph* getVerticalGlyph(uint32_t codepoint, uint8_t style = 0);
+  void prewarmVertical(const char* text, uint8_t style);
+
   struct Stats {
     uint32_t prewarmTotalMs = 0;
     uint32_t sdReadTimeMs = 0;
@@ -172,6 +175,9 @@ class SdCardFont {
     uint32_t kernMatrixFileOffset = 0;
     uint32_t ligatureFileOffset = 0;
     uint32_t bitmapFileOffset = 0;
+    uint32_t verticalFileOffset = 0;
+    uint32_t verticalBitmapOffset = 0;
+    uint16_t verticalGlyphCount = 0;
 
     // Full intervals loaded from file (kept in RAM for codepoint lookup)
     EpdUnicodeInterval* fullIntervals = nullptr;
@@ -292,6 +298,7 @@ class SdCardFont {
     uint8_t* bitmap = nullptr;
     uint32_t codepoint = 0;
     uint8_t styleIdx = 0;
+    bool vertical = false;
   };
   OverflowEntry overflow_[OVERFLOW_CAPACITY] = {};
   uint32_t overflowCount_ = 0;
@@ -350,6 +357,7 @@ class SdCardFont {
 
   // Static callback for EpdFontData::glyphMissHandler (per-style via OverflowContext)
   static const EpdGlyph* onGlyphMiss(void* ctx, uint32_t codepoint);
+  const EpdGlyph* loadOverflowGlyph(uint32_t codepoint, uint8_t styleIdx, bool vertical);
 
   // Static callback for EpdFontData::coverageHandler: answers hasCodepoint()
   // from the RAM-resident full interval table, without SD I/O.

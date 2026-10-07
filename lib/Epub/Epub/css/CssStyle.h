@@ -1,5 +1,7 @@
 #pragma once
 
+#include <VerticalText.h>
+
 #include <cstdint>
 
 // Matches order of PARAGRAPH_ALIGNMENT in CrossPointSettings
@@ -96,6 +98,7 @@ struct CssPropertyFlags {
   uint16_t direction : 1;
   uint16_t verticalAlign : 1;
   uint16_t listStyleType : 1;
+  uint16_t writingMode : 1;
 
   CssPropertyFlags()
       : textAlign(0),
@@ -116,26 +119,27 @@ struct CssPropertyFlags {
         display(0),
         direction(0),
         verticalAlign(0),
-        listStyleType(0) {}
+        listStyleType(0),
+        writingMode(0) {}
 
   [[nodiscard]] bool anySet() const {
     return textAlign || fontStyle || fontWeight || textDecoration || textIndent || marginTop || marginBottom ||
            marginLeft || marginRight || paddingTop || paddingBottom || paddingLeft || paddingRight || imageHeight ||
-           imageWidth || display || direction || verticalAlign || listStyleType;
+           imageWidth || display || direction || verticalAlign || listStyleType || writingMode;
   }
 
   void clearAll() {
     textAlign = fontStyle = fontWeight = textDecoration = textIndent = 0;
     marginTop = marginBottom = marginLeft = marginRight = 0;
     paddingTop = paddingBottom = paddingLeft = paddingRight = 0;
-    imageHeight = imageWidth = display = direction = verticalAlign = listStyleType = 0;
+    imageHeight = imageWidth = display = direction = verticalAlign = listStyleType = writingMode = 0;
   }
 };
 
-// Cache serializes defined flags as uint32_t with bit indices 0..18.
+// Cache serializes defined flags as uint32_t with bit indices 0..19.
 static_assert(sizeof(CssPropertyFlags) <= sizeof(uint32_t),
               "CssPropertyFlags exceeds 32 bits; update cache read/write in CssParser.cpp");
-static_assert(sizeof(CssPropertyFlags) * 8 >= 19,
+static_assert(sizeof(CssPropertyFlags) * 8 >= 20,
               "CssPropertyFlags has fewer bits than properties; update bitfield widths");
 
 // Represents a collection of CSS style properties
@@ -147,6 +151,7 @@ struct CssStyle {
   CssFontWeight fontWeight = CssFontWeight::Normal;
   CssTextDecoration textDecoration = CssTextDecoration::None;
   CssTextDirection direction = CssTextDirection::Ltr;
+  WritingMode writingMode = WritingMode::Horizontal;
 
   CssLength textIndent;     // First-line indent (deferred resolution)
   CssLength marginTop;      // Vertical spacing before block
@@ -232,6 +237,10 @@ struct CssStyle {
       display = base.display;
       defined.display = 1;
     }
+    if (base.hasWritingMode()) {
+      writingMode = base.writingMode;
+      defined.writingMode = 1;
+    }
     if (base.hasDirection()) {
       direction = base.direction;
       defined.direction = 1;
@@ -262,6 +271,7 @@ struct CssStyle {
   [[nodiscard]] bool hasImageHeight() const { return defined.imageHeight; }
   [[nodiscard]] bool hasImageWidth() const { return defined.imageWidth; }
   [[nodiscard]] bool hasDisplay() const { return defined.display; }
+  [[nodiscard]] bool hasWritingMode() const { return defined.writingMode; }
   [[nodiscard]] bool hasDirection() const { return defined.direction; }
   [[nodiscard]] bool hasVerticalAlign() const { return defined.verticalAlign; }
   [[nodiscard]] bool hasListStyleType() const { return defined.listStyleType; }
@@ -272,6 +282,7 @@ struct CssStyle {
     fontWeight = CssFontWeight::Normal;
     textDecoration = CssTextDecoration::None;
     direction = CssTextDirection::Ltr;
+    writingMode = WritingMode::Horizontal;
     textIndent = CssLength{};
     marginTop = marginBottom = marginLeft = marginRight = CssLength{};
     paddingTop = paddingBottom = paddingLeft = paddingRight = CssLength{};

@@ -6,7 +6,7 @@ All POD fields are written in the ESP32 little-endian representation used by
 
 ## `book.bin`
 
-### Version 10
+### Version 11
 
 `book.bin` stores EPUB metadata plus lookup tables for spine and TOC entries.
 The current firmware writes this version from `BookMetadataCache`.
@@ -18,7 +18,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 10
+#define EXPECTED_VERSION 11
 #define MAX_STRING_LENGTH 65535
 
 struct String {
@@ -37,6 +37,7 @@ struct Metadata {
     String title [[comment("Book title")]];
     String author [[comment("Book author")]];
     String language [[comment("Book language code")]];
+    u8 pageProgression [[comment("0=default, 1=ltr, 2=rtl")]];
     String coverItemHref [[comment("Path to cover image")]];
     String textReferenceHref [[comment("Path to guided first text reference")]];
 };
@@ -89,6 +90,20 @@ if (parsedSize != fileSize) {
 ```
 
 ## `section.bin`
+
+### Version 56
+
+Vertical EPUB reading adds requested `writingMode` (0=Auto, 1=Horizontal,
+2=Vertical), `verticalCharSpacing` (0–50 percent), and resolved `verticalMode`
+(boolean) before `pageCount`. Each TextBlock appends `vertical`,
+`verticalCellSize`, and `verticalCharSpacing` to BlockStyle. Its existing
+position array stores flow-axis offsets: X for horizontal lines, Y for vertical
+columns. No second per-word coordinate array is stored. Previous complete and
+partial section caches are rebuilt. The header includes paragraph indentation
+width. Version 56 and its derived partial sentinel 226 reject earlier
+experimental vertical cache formats. `book.bin` v11 adds OPF page progression
+after the language, and `css_rules.cache` v13 adds writing mode and its defined
+flag. Auto mode uses html/body CSS before the Japanese/Chinese + rtl heuristic.
 
 ### Version 52
 
@@ -214,7 +229,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 50
+#define EXPECTED_VERSION 56
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 256
@@ -272,6 +287,9 @@ struct BlockStyle {
     bool isRtl;
     bool directionDefined;
     s8 characterSpacing;
+    bool vertical;
+    u16 verticalCellSize;
+    u8 verticalCharSpacing;
 };
 
 struct TextBlock {
@@ -381,6 +399,9 @@ struct SectionBin {
     bool focusReadingEnabled;
     s8 characterSpacing;
     u8 wordSpacingPercent;
+    u8 writingMode;
+    u8 verticalCharSpacing;
+    bool verticalMode;
 
     u16 pageCount;
     u32 pageLutOffset;
@@ -522,3 +543,40 @@ make a real book disappear.
 
 `selfSize` is the expected file size. Comparing it against the real one is a free
 truncation guard: a build cut short by a power failure cannot pass.
+
+
+## SD fonts: `.cpfont` v5
+
+The 32-byte header and 32-byte style TOC remain the same size as v4. The reader
+accepts both versions. Header flag bit 0 still selects 2-bit bitmaps; bit 1 in
+v5 advertises optional vertical alternates. The final four bytes of each style
+TOC (offset 28) hold an absolute vertical-section offset, or zero for a style
+without alternates. With the flag absent, the offset is ignored.
+
+A vertical section holds a little-endian uint16 count (at most 64), sorted
+records of uint32 source codepoint plus the existing 16-byte EpdGlyph, followed
+by packed bitmaps. Glyph `dataOffset` is relative to this section's bitmap area.
+The converter extracts `vert`/`vrt2` single substitutions, including GSUB
+extension lookups, for punctuation, brackets, prolonged sound marks, dashes and
+ellipses. The loader rejects truncated, unordered, unsupported, or out-of-range
+records. Lookup reads this small index from SD and reuses the existing eight-slot
+overflow cache; no second glyph table or bitmap arena is resident in RAM.
+Missing alternates use geometric placement/rotation, as do v4 and TTF fonts.
+The download catalog first requests v5 and retries the v4 catalog if unavailable.
+
+Generate five EPUB fixtures with `python3 test/vertical_reader/create_fixtures.py
+/path/to/output` and copy them to the device's SD card. They cover Japanese and
+Chinese language fallback, explicit CSS in both directions, and horizontal
+English, with ruby, digits, Latin runs, links, a table and an image.
+
+To verify vertical reading on hardware, use a CJK font and check Auto,
+Horizontal and Vertical settings with Japanese/Chinese rtl EPUBs, explicit
+horizontal/vertical html/body CSS, and spacing 0, 10 and 50. Check all four
+orientations, ruby across columns, short digits versus long sideways Latin,
+internal links/dictionary highlights, stacked tables, and image pages. Confirm
+that mapped paging buttons reverse while explicit Next/Home/Power and automatic
+or forward-tilt turns still advance. Reopen the book, change settings, suspend a
+partial build, and confirm the same reading position and rebuilt cache geometry.
+Monitor `ESP.getFreeHeap()` and the largest free block through repeated page
+turns and activity exits with debug logging; the ESP32-C3 must retain at least
+50KB free heap. These checks require a physical device.

@@ -303,8 +303,14 @@ void ChapterHtmlSlimParser::flushPendingAnchor() {
     if (currentPage && !currentPage->elements.empty()) {
       completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
       completedPageCount++;
-      currentPage.reset(new Page());
+      currentPage = makeUniqueNoThrow<Page>();
+      if (!currentPage) {
+        LOG_ERR("EHP", "OOM: page");
+        layoutOom = true;
+        return;
+      }
       currentPageNextY = 0;
+      currentPageNextX = 0;
       currentPageVisibleOffsetSet = false;
     }
   }
@@ -433,10 +439,17 @@ void ChapterHtmlSlimParser::startNewTextBlock(const BlockStyle& blockStyle) {
     layoutOom = true;  // parseStep() turns this into ParseStatus::Error
   }
   wordsExtractedInBlock = 0;
+  verticalInsetApplied = false;
   listItemBulletOnly = false;
 }
 
 void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
+  if (verticalMode) {
+    flushPartWordBuffer();
+    makePages();
+    currentPageNextX += renderer.getLineHeight(fontId, lineCompression) / 2;
+    return;
+  }
   if (partWordBufferIndex > 0) {
     flushPartWordBuffer();
   }
@@ -453,6 +466,7 @@ void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
       return;
     }
     currentPageNextY = 0;
+    currentPageNextX = 0;
   }
 
   const int16_t lineHeight = static_cast<int16_t>(renderer.getLineHeight(fontId, lineCompression));
@@ -480,6 +494,7 @@ void ChapterHtmlSlimParser::emitHorizontalRule(const BlockStyle& blockStyle) {
       return;
     }
     currentPageNextY = 0;
+    currentPageNextX = 0;
     currentPageVisibleOffsetSet = false;
   }
 
@@ -511,6 +526,7 @@ void ChapterHtmlSlimParser::fallbackTableRowToStacked() {
   for (auto& cell : tableRowCells) {
     currentTextBlock = std::move(cell);
     wordsExtractedInBlock = 0;
+    verticalInsetApplied = false;
     if (currentTextBlock && !currentTextBlock->isEmpty()) {
       makePages();
     }
@@ -518,6 +534,7 @@ void ChapterHtmlSlimParser::fallbackTableRowToStacked() {
   tableRowCells.clear();
   currentTextBlock = std::move(activeCell);
   wordsExtractedInBlock = 0;
+  verticalInsetApplied = false;
 }
 
 void ChapterHtmlSlimParser::closeTableCell() {
@@ -544,6 +561,7 @@ void ChapterHtmlSlimParser::closeTableCell() {
 
   if (tableRowStacked) {
     wordsExtractedInBlock = 0;
+    verticalInsetApplied = false;
     if (!currentTextBlock->isEmpty()) {
       makePages();
     }
@@ -555,6 +573,7 @@ void ChapterHtmlSlimParser::closeTableCell() {
 }
 
 void ChapterHtmlSlimParser::addTableRowSeparator() {
+  if (verticalMode) return;
   if (!currentPage || currentPage->elements.empty() || viewportWidth == 0 ||
       currentPageNextY + TABLE_ROW_SEPARATOR_GAP > viewportHeight) {
     return;
@@ -669,6 +688,7 @@ void ChapterHtmlSlimParser::finishTableRow() {
         return;
       }
       currentPageNextY = 0;
+      currentPageNextX = 0;
       currentPageVisibleOffsetSet = false;
     }
 
@@ -779,11 +799,15 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   CssStyle cssStyle;
   if (self->cssParser) {
     cssStyle = self->cssParser->resolveStyle(name, classAttr);
-    if (!styleAttr.empty()) {
-      CssStyle inlineStyle = CssParser::parseInlineStyle(styleAttr);
-      cssStyle.applyOver(inlineStyle);
-    }
   }
+  if (!styleAttr.empty() && (self->embeddedStyle || strcasecmp(name, "html") == 0 || strcasecmp(name, "body") == 0)) {
+    cssStyle.applyOver(CssParser::parseInlineStyle(styleAttr));
+  }
+  if (self->writingMode == WritingMode::Auto && cssStyle.hasWritingMode() &&
+      (strcasecmp(name, "html") == 0 || strcasecmp(name, "body") == 0)) {
+    self->verticalMode = cssStyle.writingMode == WritingMode::Vertical;
+  }
+  if (!self->embeddedStyle) cssStyle.reset();
 
   // HTML hidden attribute overrides CSS display.
   if (hasHiddenAttr) {
@@ -857,7 +881,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       self->makePages();
     }
     self->currentTextBlock.reset();
-    self->tableRowStacked = self->tableRowsSpannedRemaining > 0;
+    self->tableRowStacked = self->verticalMode || self->tableRowsSpannedRemaining > 0;
     self->tableRowRtl = cssStyle.hasDirection() && cssStyle.direction == CssTextDirection::Rtl;
     if (self->tableRowsSpannedRemaining != UINT16_MAX && self->tableRowsSpannedRemaining > 0) {
       self->tableRowsSpannedRemaining--;
@@ -912,6 +936,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
     self->insideTableCell = true;
     self->tableCellTextBytes = 0;
     self->wordsExtractedInBlock = 0;
+    self->verticalInsetApplied = false;
     self->flushPendingAnchor();
     self->pushTableTextStyleEntry(cssStyle);
 
@@ -1168,25 +1193,27 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
 
                 // Create page for image - only break if image won't fit remaining space
                 if (self->currentPage && !self->currentPage->elements.empty() &&
-                    (self->currentPageNextY + imageMarginTop + displayHeight + imageMarginBottom >
-                     self->viewportHeight)) {
+                    (self->verticalMode || self->currentPageNextY + imageMarginTop + displayHeight + imageMarginBottom >
+                                               self->viewportHeight)) {
                   self->completePageFn(std::move(self->currentPage), self->xpathParagraphIndex,
                                        self->xpathListItemIndex, self->currentPageVisibleOffset);
                   self->completedPageCount++;
-                  self->currentPage.reset(new Page());
+                  self->currentPage = makeUniqueNoThrow<Page>();
                   if (!self->currentPage) {
                     LOG_ERR("EHP", "Failed to create new page");
                     return;
                   }
                   self->currentPageNextY = 0;
+                  self->currentPageNextX = 0;
                   self->currentPageVisibleOffsetSet = false;
                 } else if (!self->currentPage) {
-                  self->currentPage.reset(new Page());
+                  self->currentPage = makeUniqueNoThrow<Page>();
                   if (!self->currentPage) {
                     LOG_ERR("EHP", "Failed to create initial page");
                     return;
                   }
                   self->currentPageNextY = 0;
+                  self->currentPageNextX = 0;
                   self->currentPageVisibleOffsetSet = false;
                 }
 
@@ -1208,17 +1235,27 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                     makeUniqueNoThrow<ImageBlock>(cachedImagePath, resolvedPath, displayWidth, displayHeight);
                 if (!imageBlock) {
                   LOG_ERR("EHP", "Failed to create ImageBlock");
+                  self->layoutOom = true;
                   return;
                 }
                 int xPos = (self->viewportWidth - displayWidth) / 2;
                 auto pageImage = makeUniqueNoThrow<PageImage>(std::move(imageBlock), xPos, self->currentPageNextY);
                 if (!pageImage) {
                   LOG_ERR("EHP", "Failed to create PageImage");
+                  self->layoutOom = true;
                   return;
                 }
                 self->currentPage->elements.push_back(std::move(pageImage));
                 self->setCurrentPageVisibleOffset(self->visibleTextOffset);
                 self->currentPageNextY += displayHeight + imageMarginBottom;
+                if (self->verticalMode) {
+                  self->completePageFn(std::move(self->currentPage), self->xpathParagraphIndex,
+                                       self->xpathListItemIndex, self->currentPageVisibleOffset);
+                  ++self->completedPageCount;
+                  self->currentPageNextX = 0;
+                  self->currentPageNextY = 0;
+                  self->currentPageVisibleOffsetSet = false;
+                }
 
                 // The image consumed the empty block's accumulated vertical spacing.
                 // Reset the block so the Vertical merge in startNewTextBlock doesn't
@@ -1554,7 +1591,7 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
       }
       applyTextDecorationToEntry(entry, cssStyle);
       applyDirectionToEntry(entry, cssStyle);
-      entry.setsParagraphDirection = strcmp(name, "html") == 0 || strcmp(name, "body") == 0;
+      entry.setsParagraphDirection = strcasecmp(name, "html") == 0 || strcasecmp(name, "body") == 0;
       if (inheritedTableTextAlign) {
         entry.hasTextAlign = true;
         entry.textAlign = cssStyle.textAlign;
@@ -1622,6 +1659,7 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
       return;
     }
     self->wordsExtractedInBlock = 0;
+    self->verticalInsetApplied = false;
   }
 
   // Collect footnote link display text (for the number label)
@@ -1973,6 +2011,7 @@ void XMLCALL ChapterHtmlSlimParser::endElement(void* userData, const XML_Char* n
       LOG_ERR("EHP", "OOM: text block after table");
     }
     self->wordsExtractedInBlock = 0;
+    self->verticalInsetApplied = false;
   }
 
   // Leaving bold tag
@@ -2179,8 +2218,10 @@ bool ChapterHtmlSlimParser::finishParse() {
       pendingAnchorId.clear();
     }
     setCurrentPageVisibleOffset(visibleTextOffset);
-    completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
-    completedPageCount++;
+    if (currentPage && !currentPage->elements.empty()) {
+      completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
+      completedPageCount++;
+    }
     currentPage.reset();
     currentTextBlock.reset();
   }
@@ -2206,12 +2247,65 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
 }
 
 void ChapterHtmlSlimParser::addLineToPage(std::unique_ptr<TextBlock> line, const uint32_t visibleOffset) {
+  if (verticalMode) {
+    const auto& style = line->getBlockStyle();
+    const int cell = style.verticalCellSize;
+    const int rubyWidth = line->hasRuby() ? std::max(1, cell / 2) : 0;
+    const int width = std::min<int>(viewportWidth, cell + rubyWidth);
+    const int pitch = std::max(width, renderer.getLineHeight(fontId, lineCompression));
+    if (!currentPage || (!currentPage->elements.empty() && currentPageNextX + width > viewportWidth)) {
+      if (currentPage && !currentPage->elements.empty()) {
+        completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
+        ++completedPageCount;
+      }
+      currentPage = makeUniqueNoThrow<Page>();
+      if (!currentPage) {
+        LOG_ERR("EHP", "OOM: vertical page");
+        layoutOom = true;
+        return;
+      }
+      currentPageNextX = 0;
+      currentPageVisibleOffsetSet = false;
+    }
+    const int x = std::max(0, static_cast<int>(viewportWidth) - currentPageNextX - width);
+    const int y = std::clamp<int>(style.topInset(), 0, std::max(0, static_cast<int>(viewportHeight) - cell));
+    setCurrentPageVisibleOffset(visibleOffset);
+    wordsExtractedInBlock += line->wordCount();
+    auto fn = pendingFootnotes.begin();
+    while (fn != pendingFootnotes.end() && fn->first <= wordsExtractedInBlock) {
+      currentPage->addFootnote(fn->second.number, fn->second.href);
+      ++fn;
+    }
+    pendingFootnotes.erase(pendingFootnotes.begin(), fn);
+    for (const auto& link : line->takeLinkSpans()) {
+      if (!currentPage->addLink(link.href, x, y + link.x, cell, link.width))
+        LOG_DBG("EHP", "Dropped vertical link: %.48s", link.href);
+    }
+    auto pageLine = makeUniqueNoThrow<PageLine>(std::move(line), x, y);
+    if (!pageLine) {
+      LOG_ERR("EHP", "OOM: vertical PageLine");
+      layoutOom = true;
+      return;
+    }
+    if (currentPage->elements.capacity() <= currentPage->elements.size())
+      currentPage->elements.reserve(currentPage->elements.size() +
+                                    std::max(1, static_cast<int>(viewportWidth) / pitch));
+    currentPage->elements.push_back(std::move(pageLine));
+    currentPageNextX = static_cast<int16_t>(std::min<int>(INT16_MAX, currentPageNextX + pitch));
+    return;
+  }
   const int lineHeight =
       renderer.getLineHeight(fontId, lineCompression) + line->getRubyShift(renderer.getFontAscenderSize(fontId));
 
   if (!currentPage) {
-    currentPage.reset(new Page());
+    currentPage = makeUniqueNoThrow<Page>();
+    if (!currentPage) {
+      LOG_ERR("EHP", "OOM: page");
+      layoutOom = true;
+      return;
+    }
     currentPageNextY = 0;
+    currentPageNextX = 0;
     currentPageVisibleOffsetSet = false;
   }
 
@@ -2219,8 +2313,14 @@ void ChapterHtmlSlimParser::addLineToPage(std::unique_ptr<TextBlock> line, const
     setCurrentPageVisibleOffset(visibleOffset);
     completePageFn(std::move(currentPage), xpathParagraphIndex, xpathListItemIndex, currentPageVisibleOffset);
     completedPageCount++;
-    currentPage.reset(new Page());
+    currentPage = makeUniqueNoThrow<Page>();
+    if (!currentPage) {
+      LOG_ERR("EHP", "OOM: page");
+      layoutOom = true;
+      return;
+    }
     currentPageNextY = 0;
+    currentPageNextX = 0;
     currentPageVisibleOffsetSet = false;
   }
   setCurrentPageVisibleOffset(visibleOffset);
@@ -2248,6 +2348,7 @@ void ChapterHtmlSlimParser::addLineToPage(std::unique_ptr<TextBlock> line, const
   auto pageLine = makeUniqueNoThrow<PageLine>(std::move(line), xOffset, currentPageNextY);
   if (!pageLine) {
     LOG_ERR("EHP", "OOM: PageLine");
+    layoutOom = true;
     return;
   }
   currentPage->elements.push_back(std::move(pageLine));
@@ -2268,11 +2369,37 @@ void ChapterHtmlSlimParser::makePages(const bool includeLastLine) {
   }
 
   if (!currentPage) {
-    currentPage.reset(new Page());
+    currentPage = makeUniqueNoThrow<Page>();
+    if (!currentPage) {
+      LOG_ERR("EHP", "OOM: page");
+      layoutOom = true;
+      return;
+    }
     currentPageNextY = 0;
+    currentPageNextX = 0;
     currentPageVisibleOffsetSet = false;
   }
 
+  if (verticalMode) {
+    const auto style = currentTextBlock->getBlockStyle();
+    const int inset =
+        std::max(0, static_cast<int>(style.topInset())) + std::max(0, static_cast<int>(style.bottomInset()));
+    const auto height = static_cast<uint16_t>(std::max(1, static_cast<int>(viewportHeight) - inset));
+    if (!currentTextBlock->isEmpty() && !verticalInsetApplied) {
+      currentPageNextX += std::max(0, static_cast<int>(style.rightInset()));
+      verticalInsetApplied = true;
+    }
+    currentTextBlock->layoutVerticalColumns(
+        renderer, fontId, height, verticalCharSpacing,
+        [this](std::unique_ptr<TextBlock> column, uint32_t offset) { addLineToPage(std::move(column), offset); },
+        includeLastLine);
+    if (currentTextBlock->hadDroppedWords()) layoutOom = true;
+    if (includeLastLine) {
+      currentPageNextX += std::max(0, static_cast<int>(style.leftInset()));
+      if (extraParagraphSpacing) currentPageNextX += renderer.getLineHeight(fontId, lineCompression) / 2;
+    }
+    return;
+  }
   const int lineHeight = renderer.getLineHeight(fontId, lineCompression);
 
   const BlockStyle& blockStyle = currentTextBlock->getBlockStyle();

@@ -144,8 +144,8 @@ constexpr std::array STYLE_LENGTH_FIELDS = {
 };
 constexpr size_t STYLE_LENGTH_FIELD_COUNT = STYLE_LENGTH_FIELDS.size();
 constexpr size_t STYLE_WIRE_BYTES =
-    5 + STYLE_LENGTH_FIELD_COUNT * (sizeof(decltype(CssLength::value)) + 1) + 3 + sizeof(uint32_t);
-constexpr uint32_t CSS_DEFINED_BITS_MASK = (1u << 19) - 1;
+    6 + STYLE_LENGTH_FIELD_COUNT * (sizeof(decltype(CssLength::value)) + 1) + 3 + sizeof(uint32_t);
+constexpr uint32_t CSS_DEFINED_BITS_MASK = (1u << 20) - 1;
 
 void encodeStyleWire(const CssStyle& style, uint8_t (&out)[STYLE_WIRE_BYTES]) {
   size_t offset = 0;
@@ -154,6 +154,7 @@ void encodeStyleWire(const CssStyle& style, uint8_t (&out)[STYLE_WIRE_BYTES]) {
   out[offset++] = static_cast<uint8_t>(style.fontWeight);
   out[offset++] = static_cast<uint8_t>(style.textDecoration);
   out[offset++] = static_cast<uint8_t>(style.direction);
+  out[offset++] = static_cast<uint8_t>(style.writingMode);
 
   const auto putLength = [&out, &offset](const CssLength& length) {
     memcpy(out + offset, &length.value, sizeof(length.value));
@@ -187,6 +188,7 @@ void encodeStyleWire(const CssStyle& style, uint8_t (&out)[STYLE_WIRE_BYTES]) {
   if (style.defined.direction) definedBits |= 1 << 16;
   if (style.defined.verticalAlign) definedBits |= 1 << 17;
   if (style.defined.listStyleType) definedBits |= 1 << 18;
+  if (style.defined.writingMode) definedBits |= 1 << 19;
   memcpy(out + offset, &definedBits, sizeof(definedBits));
 }
 
@@ -197,9 +199,12 @@ bool decodeStyleWire(const uint8_t (&in)[STYLE_WIRE_BYTES], CssStyle& style) {
   const uint8_t fontWeight = in[offset++];
   const uint8_t textDecoration = in[offset++];
   const uint8_t direction = in[offset++];
+  const uint8_t writingMode = in[offset++];
   if (textAlign > static_cast<uint8_t>(CssTextAlign::None) || fontStyle > static_cast<uint8_t>(CssFontStyle::Italic) ||
       fontWeight > static_cast<uint8_t>(CssFontWeight::Bold) || (textDecoration & ~CSS_TEXT_DECORATION_MASK) != 0 ||
-      direction > static_cast<uint8_t>(CssTextDirection::Rtl)) {
+      direction > static_cast<uint8_t>(CssTextDirection::Rtl) ||
+      writingMode < static_cast<uint8_t>(WritingMode::Horizontal) ||
+      writingMode > static_cast<uint8_t>(WritingMode::Vertical)) {
     return false;
   }
   style.textAlign = static_cast<CssTextAlign>(textAlign);
@@ -207,6 +212,7 @@ bool decodeStyleWire(const uint8_t (&in)[STYLE_WIRE_BYTES], CssStyle& style) {
   style.fontWeight = static_cast<CssFontWeight>(fontWeight);
   style.textDecoration = static_cast<CssTextDecoration>(textDecoration);
   style.direction = static_cast<CssTextDirection>(direction);
+  style.writingMode = static_cast<WritingMode>(writingMode);
 
   const auto getLength = [&in, &offset](CssLength& length) {
     decltype(CssLength::value) value = 0;
@@ -255,6 +261,7 @@ bool decodeStyleWire(const uint8_t (&in)[STYLE_WIRE_BYTES], CssStyle& style) {
   style.defined.direction = (definedBits & 1 << 16) != 0;
   style.defined.verticalAlign = (definedBits & 1 << 17) != 0;
   style.defined.listStyleType = (definedBits & 1 << 18) != 0;
+  style.defined.writingMode = (definedBits & 1 << 19) != 0;
   return true;
 }
 
@@ -618,6 +625,10 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
   } else if (iequalsAscii(name, "display")) {
     style.display = iequalsAscii(value, "none") ? CssDisplay::None : CssDisplay::Block;
     style.defined.display = 1;
+  } else if (iequalsAscii(name, "writing-mode") || iequalsAscii(name, "-epub-writing-mode") ||
+             iequalsAscii(name, "-webkit-writing-mode")) {
+    style.writingMode = iequalsAscii(value, "vertical-rl") ? WritingMode::Vertical : WritingMode::Horizontal;
+    style.defined.writingMode = 1;
   } else if (iequalsAscii(name, "direction")) {
     if (iequalsAscii(value, "rtl")) {
       style.direction = CssTextDirection::Rtl;

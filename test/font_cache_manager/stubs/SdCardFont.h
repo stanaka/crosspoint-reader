@@ -20,6 +20,8 @@ class SdCardFont {
     call.accumulate = accumulate;
     return 0;
   }
+  void prewarmVertical(const char*, uint8_t) { ++verticalPrewarmCalls; }
+  int verticalPrewarmCalls = 0;
   uint8_t resolveStyle(uint8_t style) const { return resolvedStyles[style & 0x03]; }
   void logStats(const char*) {}
   void resetStats() {}

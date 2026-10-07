@@ -3,6 +3,7 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <fstream>
 #include <memory>
 #include <set>
 #include <string>
@@ -468,4 +469,284 @@ TEST(KoreanLayout, HangulGluedAcrossInlineStyleIsUnbreakable) {
   // 가나 한국 fits in 36 px, but 어 is glued to 한국, so the whole word moves down.
   const std::vector<std::vector<std::string>> expected{{"가나"}, {"한국", "어"}};
   EXPECT_EQ(lines, expected);
+}
+
+TEST(VerticalTextBehavior, LanguageHeuristicAndButtonDirectionAreExplicit) {
+  for (const char* language : {"ja", "JA-jp", "jpn", "zh-Hant", "ZHO"}) {
+    EXPECT_TRUE(verticalText::languageFallback(language, PageProgression::Rtl));
+    EXPECT_FALSE(verticalText::languageFallback(language, PageProgression::Ltr));
+  }
+  for (const char* language : {"en", "ar", "he", "ko", "japanese", ""})
+    EXPECT_FALSE(verticalText::languageFallback(language, PageProgression::Rtl));
+  EXPECT_EQ(verticalText::classify("日本"), verticalText::Behavior::Upright);
+  EXPECT_EQ(verticalText::classify("A"), verticalText::Behavior::Sideways);
+  EXPECT_EQ(verticalText::classify("12"), verticalText::Behavior::TateChuYoko);
+  EXPECT_EQ(verticalText::classify("123"), verticalText::Behavior::Sideways);
+  const auto horizontal = verticalText::pageButtons(false, true, false);
+  EXPECT_TRUE(horizontal.next);
+  EXPECT_FALSE(horizontal.prev);
+  const auto vertical = verticalText::pageButtons(false, true, true);
+  EXPECT_FALSE(vertical.next);
+  EXPECT_TRUE(vertical.prev);
+}
+
+TEST_F(ChapterHtmlSlimParserTest, AutoHonorsRootAndBodyWithoutEmbeddedAppearance) {
+  parser.embeddedStyle = false;
+  parser.setWritingMode(WritingMode::Auto, 10, true);
+  const char* html[] = {"style", "writing-mode:vertical-rl", nullptr};
+  const char* body[] = {"style", "writing-mode:horizontal-tb", nullptr};
+  ChapterHtmlSlimParser::startElement(&parser, "html", html);
+  EXPECT_TRUE(parser.isVertical());
+  ChapterHtmlSlimParser::startElement(&parser, "body", body);
+  EXPECT_FALSE(parser.isVertical());
+  parser.setWritingMode(WritingMode::Vertical, 10);
+  ChapterHtmlSlimParser::startElement(&parser, "body", body);
+  EXPECT_TRUE(parser.isVertical());
+  parser.setWritingMode(WritingMode::Horizontal, 10);
+  ChapterHtmlSlimParser::startElement(&parser, "html", html);
+  EXPECT_FALSE(parser.isVertical());
+}
+
+TEST_F(ChapterHtmlSlimParserTest, VerticalKinsokuAvoidsClosingHeadsAndOpeningTails) {
+  for (const auto& tokens : {std::vector<std::string>{"一", "二", "三", "、", "四"},
+                             std::vector<std::string>{"一", "二", "「", "三", "四"}}) {
+    ParsedText text(false);
+    text.getBlockStyle().textIndentDefined = true;
+    text.getBlockStyle().textIndent = 0;
+    for (const auto& token : tokens) text.addWord(token, EpdFontFamily::REGULAR);
+    std::vector<std::string> actual;
+    text.layoutVerticalColumns(renderer, 0, 24, 0, [&](std::unique_ptr<TextBlock> column, auto) {
+      ASSERT_GT(column->wordCount(), 0);
+      EXPECT_FALSE(verticalText::prohibitedHead(verticalText::firstCodepoint(column->wordText(0))));
+      EXPECT_FALSE(
+          verticalText::prohibitedTail(verticalText::firstCodepoint(column->wordText(column->wordCount() - 1))));
+      for (uint16_t i = 0; i < column->wordCount(); ++i) {
+        EXPECT_LE(column->wordYpos(i) + column->wordFlowExtent(renderer, 0, i), 24);
+        actual.emplace_back(column->wordText(i));
+      }
+    });
+    EXPECT_EQ(actual, tokens);
+  }
+}
+
+TEST_F(ChapterHtmlSlimParserTest, FittingRubyGroupMovesAsOneUnit) {
+  ParsedText text(false);
+  text.getBlockStyle().textIndentDefined = true;
+  text.getBlockStyle().textIndent = 0;
+  for (const char* token : {"一", "二", "三", "四"}) text.addWord(token, EpdFontFamily::REGULAR);
+  text.setRubyGroupAt(1, 3, "にさんよん");
+  std::vector<unsigned> counts;
+  text.layoutVerticalColumns(renderer, 0, 24, 0, [&](std::unique_ptr<TextBlock> column, auto) {
+    counts.push_back(column->wordCount());
+    if (column->hasRuby()) {
+      EXPECT_EQ(column->wordCount(), 3);
+      EXPECT_EQ(column->getRubyTexts()[0], "にさんよん");
+    }
+  });
+  EXPECT_EQ(counts, (std::vector<unsigned>{1, 3}));
+}
+
+TEST_F(ChapterHtmlSlimParserTest, OversizedRubyAndSidewaysTokensKeepAllText) {
+  ParsedText text(false);
+  text.getBlockStyle().textIndentDefined = true;
+  text.getBlockStyle().textIndent = 0;
+  for (const char* token : {"一", "二", "三", "四", "五", "六"}) text.addWord(token, EpdFontFamily::REGULAR);
+  text.setRubyGroupAt(0, 6, "いちにさんしごろく");
+  text.addWord("abcdefghij", EpdFontFamily::REGULAR);
+  std::string actual, ruby;
+  text.layoutVerticalColumns(renderer, 0, 24, 0, [&](std::unique_ptr<TextBlock> column, auto) {
+    for (uint16_t i = 0; i < column->wordCount(); ++i) {
+      actual += column->wordText(i);
+      EXPECT_LE(column->wordYpos(i) + column->wordFlowExtent(renderer, 0, i), 24);
+    }
+    for (const auto& r : column->getRubyTexts()) ruby += r;
+  });
+  EXPECT_EQ(actual, "一二三四五六abcdefghij");
+  EXPECT_EQ(ruby, "いちにさんしごろく");
+  EXPECT_EQ(text.size(), 0);
+}
+
+TEST_F(ChapterHtmlSlimParserTest, VerticalSoftFlushMatchesWholeParagraph) {
+  const std::vector<std::string> tokens{"一", "二", "三", "、", "四", "五", "「", "六", "七", "」", "八", "九"};
+  const auto layout = [&](bool partial) {
+    ParsedText text(false);
+    text.getBlockStyle().textIndentDefined = true;
+    text.getBlockStyle().textIndent = 0;
+    std::vector<std::string> columns;
+    auto collect = [&](std::unique_ptr<TextBlock> column, uint32_t offset) {
+      std::string value = std::to_string(offset) + ":";
+      for (uint16_t i = 0; i < column->wordCount(); ++i)
+        value += std::to_string(column->wordYpos(i)) + column->wordText(i);
+      columns.push_back(value);
+    };
+    for (size_t i = 0; i < tokens.size(); ++i) {
+      text.addWord(tokens[i], EpdFontFamily::REGULAR, false, false, i);
+      if (partial && i % 4 == 3) text.layoutVerticalColumns(renderer, 0, 32, 50, collect, false);
+    }
+    text.layoutVerticalColumns(renderer, 0, 32, 50, collect);
+    return columns;
+  };
+  EXPECT_EQ(layout(true), layout(false));
+}
+
+TEST_F(ChapterHtmlSlimParserTest, VerticalColumnsPaginateRightToLeftAndKeepLinkBounds) {
+  parser.setWritingMode(WritingMode::Vertical, 0);
+  parser.viewportWidth = 32;
+  parser.viewportHeight = 24;
+  parser.currentTextBlock->getBlockStyle().textIndentDefined = true;
+  parser.currentTextBlock->getBlockStyle().textIndent = 0;
+  const auto link = parser.currentTextBlock->addLinkTarget("#note");
+  for (unsigned i = 0; i < 13; ++i)
+    parser.currentTextBlock->addWord("一", EpdFontFamily::REGULAR, false, false, i, link);
+  unsigned pages = 0, words = 0;
+  auto inspect = [&](std::unique_ptr<Page> page, auto, auto, auto) {
+    ASSERT_NE(page, nullptr);
+    ++pages;
+    int previousX = 32;
+    for (const auto& element : page->elements) {
+      ASSERT_EQ(element->getTag(), TAG_PageLine);
+      const auto* line = static_cast<const PageLine*>(element.get());
+      EXPECT_LT(line->xPos, previousX);
+      EXPECT_GE(line->xPos, 0);
+      previousX = line->xPos;
+      EXPECT_TRUE(line->getBlock()->isVertical());
+      words += line->getBlock()->wordCount();
+    }
+    for (const auto& entry : page->links) {
+      EXPECT_GE(entry.x, 0);
+      EXPECT_GE(entry.y, 0);
+      EXPECT_LE(entry.x + entry.width, 32);
+      EXPECT_LE(entry.y + entry.height, 24);
+    }
+  };
+  parser.completePageFn = inspect;
+  parser.makePages();
+  inspect(std::move(parser.currentPage), 0, 0, 0);
+  EXPECT_EQ(words, 13);
+  EXPECT_EQ(pages, 3);
+}
+
+TEST_F(ChapterHtmlSlimParserTest, VerticalBlockCachePreservesFlowAxisRubyAndFocus) {
+  ParsedText text(false);
+  text.getBlockStyle().textIndentDefined = true;
+  text.getBlockStyle().textIndent = 0;
+  text.addWord("一", EpdFontFamily::REGULAR);
+  text.addWord("12", EpdFontFamily::REGULAR);
+  text.setRubyForWordAt(0, "いち");
+  const auto path = std::filesystem::temp_directory_path() / "crosspoint-vertical-block.bin";
+  text.layoutVerticalColumns(renderer, 0, 80, 50, [&](std::unique_ptr<TextBlock> block, auto) {
+    {
+      HalFile file;
+      ASSERT_TRUE(file.open(path.c_str(), "wb"));
+      ASSERT_TRUE(block->serialize(file));
+    }
+    HalFile file;
+    ASSERT_TRUE(file.open(path.c_str(), "rb"));
+    auto cached = TextBlock::deserialize(file);
+    ASSERT_NE(cached, nullptr);
+    ASSERT_TRUE(cached->isVertical());
+    EXPECT_EQ(cached->wordCount(), 2);
+    EXPECT_EQ(cached->wordXpos(1), 0);
+    EXPECT_EQ(cached->wordYpos(1), 12);
+    EXPECT_EQ(cached->getRubyTexts()[0], "いち");
+    EXPECT_EQ(cached->getBlockStyle().verticalCharSpacing, 50);
+  });
+  std::filesystem::remove(path);
+}
+
+TEST_F(ChapterHtmlSlimParserTest, VerticalAlignmentUsesTheFlowAxis) {
+  for (const auto align : {CssTextAlign::Center, CssTextAlign::Right}) {
+    BlockStyle style;
+    style.textIndentDefined = true;
+    style.alignment = align;
+    ParsedText text(false, false, style);
+    text.addWord("一", EpdFontFamily::REGULAR);
+    text.addWord("二", EpdFontFamily::REGULAR);
+    text.layoutVerticalColumns(renderer, 0, 40, 0, [&](std::unique_ptr<TextBlock> column, auto) {
+      EXPECT_EQ(column->wordYpos(0), align == CssTextAlign::Center ? 12 : 24);
+      EXPECT_EQ(column->wordXpos(0), 0);
+    });
+  }
+}
+
+TEST_F(ChapterHtmlSlimParserTest, VerticalIncrementalParserMatchesOneShotWithSoftFlushAndTables) {
+  const auto path = std::filesystem::temp_directory_path() / "crosspoint-vertical-parser.xhtml";
+  std::string source = "<html><body style=\"writing-mode:vertical-rl\"><p style=\"text-indent:0;margin-right:8px\">";
+  for (unsigned i = 0; i < 600; ++i) source += "一二三、四五";
+  source += "</p><table><tr><td>甲乙丙</td><td>丁戊己</td></tr></table><p>終</p></body></html>";
+  {
+    std::ofstream file(path);
+    file << source;
+  }
+  filepath = path.string();
+  parser.viewportWidth = 48;
+  parser.viewportHeight = 40;
+  parser.setParagraphIndentSpaces(0);
+  parser.setWritingMode(WritingMode::Auto, 0);
+  const auto run = [&](bool incremental) {
+    ChapterHtmlSlimParser parser(nullptr, filepath, renderer, 0, 1.0f, false, 0, 48, 40, false, false, {}, true, "", "",
+                                 0, {}, nullptr, &cssParser);
+    parser.setParagraphIndentSpaces(0);
+    parser.setWritingMode(WritingMode::Auto, 0);
+    std::vector<std::string> pages;
+    parser.completePageFn = [&](std::unique_ptr<Page> page, auto, auto, uint32_t offset) {
+      ASSERT_NE(page, nullptr);
+      ASSERT_FALSE(page->elements.empty());
+      auto& snapshot = pages.emplace_back(std::to_string(offset));
+      for (const auto& element : page->elements) {
+        ASSERT_EQ(element->getTag(), TAG_PageLine);
+        const auto* block = static_cast<const PageLine*>(element.get())->getBlock();
+        ASSERT_TRUE(block->isVertical());
+        EXPECT_GE(element->xPos, 0);
+        EXPECT_LE(element->xPos + block->getBlockStyle().verticalCellSize, 48);
+        snapshot += ":" + std::to_string(element->xPos);
+        for (uint16_t i = 0; i < block->wordCount(); ++i) {
+          EXPECT_LE(element->yPos + block->wordYpos(i) + block->wordFlowExtent(renderer, 0, i), 40);
+          snapshot += std::to_string(block->wordYpos(i)) + block->wordText(i);
+        }
+      }
+    };
+    if (incremental) {
+      EXPECT_TRUE(parser.beginParse());
+      while (true) {
+        const auto status = parser.parseStep();
+        EXPECT_NE(status, ChapterHtmlSlimParser::ParseStatus::Error);
+        if (status == ChapterHtmlSlimParser::ParseStatus::Error || status == ChapterHtmlSlimParser::ParseStatus::Done)
+          break;
+      }
+      EXPECT_TRUE(parser.finishParse());
+    } else
+      EXPECT_TRUE(parser.parseAndBuildPages());
+    return pages;
+  };
+  const auto expected = run(false);
+  EXPECT_GT(expected.size(), 10);
+  EXPECT_EQ(run(true), expected);
+  std::filesystem::remove(path);
+}
+
+TEST_F(ChapterHtmlSlimParserTest, VerticalFocusDigitSuffixKeepsSidewaysExtent) {
+  renderer.wideBold = true;
+  BlockStyle style;
+  style.vertical = true;
+  style.verticalCellSize = 8;
+  TextBlock block({"ab12"}, {0}, {EpdFontFamily::REGULAR}, {2}, {24}, style);
+  ASSERT_TRUE(block.valid());
+  EXPECT_EQ(block.wordFlowExtent(renderer, 0, 0), 40);
+}
+
+TEST_F(ChapterHtmlSlimParserTest, VerticalFocusSplitsAccountForBoldAdvances) {
+  renderer.wideBold = true;
+  BlockStyle style;
+  style.textIndentDefined = true;
+  ParsedText text(false, true, style);
+  text.addWord("abcdefgh", EpdFontFamily::REGULAR);
+  std::string collected;
+  text.layoutVerticalColumns(renderer, 0, 24, 0, [&](std::unique_ptr<TextBlock> block, auto) {
+    for (uint16_t i = 0; i < block->wordCount(); ++i) {
+      collected += block->wordText(i);
+      EXPECT_LE(block->wordYpos(i) + block->wordFlowExtent(renderer, 0, i), 24);
+    }
+  });
+  EXPECT_EQ(collected, "abcdefgh");
 }
