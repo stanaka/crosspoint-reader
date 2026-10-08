@@ -14,15 +14,22 @@ const char* lookupHtmlEntity(const char*, size_t) { return nullptr; }
 bool isExplicitHyphen(uint32_t) { return false; }
 bool isSoftHyphen(uint32_t) { return false; }
 
-std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string&, bool) { return {}; }
+std::vector<Hyphenator::BreakInfo> Hyphenator::breakOffsets(const std::string& word, bool) {
+  if (word == "abcdef") return {{3, true}};
+  return {};
+}
 
 ImageBlock::ImageBlock(const std::string& imagePath, const std::string& srcPath, int16_t width, int16_t height)
     : imagePath(imagePath), srcPath(srcPath), width(width), height(height) {}
 
-bool ImageDecoderFactory::isFormatSupported(const std::string&) { return false; }
+bool ImageDecoderFactory::isFormatSupported(const std::string& path) { return path.ends_with(".png"); }
 ImageToFramebufferDecoder* ImageDecoderFactory::getDecoder(const std::string&) { return nullptr; }
-bool ImageToFramebufferDecoder::validateAndStoreDimensions(int64_t, int64_t, ImageDimensions&, const char*) {
-  return false;
+bool ImageToFramebufferDecoder::validateAndStoreDimensions(int64_t width, int64_t height, ImageDimensions& dims,
+                                                           const char*) {
+  if (width <= 0 || height <= 0 || width > INT16_MAX || height > INT16_MAX) return false;
+  dims.width = static_cast<int16_t>(width);
+  dims.height = static_cast<int16_t>(height);
+  return true;
 }
 
 void ImageBlock::render(GfxRenderer&, int, int) {}

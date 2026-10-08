@@ -61,6 +61,40 @@ constexpr const char* LINETHROUGH_TAGS[] = {"del", "s", "strike"};
 constexpr const char* IMAGE_TAGS[] = {"img", "image"};
 bool isWhitespace(const char c) { return c == ' ' || c == '\r' || c == '\n' || c == '\t'; }
 
+enum class GaijiKind : uint8_t { None, Square, Tall, Wide };
+
+GaijiKind gaijiKind(std::string_view classes) {
+  while (!classes.empty()) {
+    const auto end = classes.find_first_of(" \t\r\n");
+    const auto token = classes.substr(0, end);
+    if (token == "gaiji") return GaijiKind::Square;
+    if (token == "gaiji-line") return GaijiKind::Tall;
+    if (token == "gaiji-wide") return GaijiKind::Wide;
+    if (end == std::string_view::npos) break;
+    classes.remove_prefix(end + 1);
+  }
+  return GaijiKind::None;
+}
+
+bool usesInlineImageLayout(const CssStyle& style, const GaijiKind kind, const float em, const int width,
+                           const int height) {
+  if (style.hasDisplay()) {
+    switch (style.display) {
+      case CssDisplay::Block:
+      case CssDisplay::None:
+        return false;
+      case CssDisplay::Inline:
+      case CssDisplay::InlineBlock:
+        return true;
+    }
+  }
+  if (kind != GaijiKind::None) return true;
+  const float cssWidth = style.hasImageWidth() ? style.imageWidth.toPixels(em, width) : 0;
+  const float cssHeight = style.hasImageHeight() ? style.imageHeight.toPixels(em, height) : 0;
+  constexpr float MAX_INLINE_EM = 3.0f;
+  return (cssWidth > 0 && cssWidth <= MAX_INLINE_EM * em) || (cssHeight > 0 && cssHeight <= MAX_INLINE_EM * em);
+}
+
 std::string trimAndNormalize(const std::string& str) {
   if (str.empty()) return "";
   size_t start = 0;
@@ -977,6 +1011,35 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
   }
 
   if (matches(name, IMAGE_TAGS, std::size(IMAGE_TAGS))) {
+    const auto kind = gaijiKind(classAttr);
+    const float imageEm = static_cast<float>(self->renderer.getFontAscenderSize(self->fontId));
+    const int horizontalInset =
+        self->currentTextBlock ? self->currentTextBlock->getBlockStyle().totalHorizontalInset() : 0;
+    const int imageContainerWidth = horizontalInset > 0 && horizontalInset < self->viewportWidth
+                                        ? self->viewportWidth - horizontalInset
+                                        : self->viewportWidth;
+    const bool inlineImage = usesInlineImageLayout(cssStyle, kind, imageEm, imageContainerWidth, self->viewportHeight);
+    if (inlineImage && cssStyle.hasImageHeight() && cssStyle.imageHeight.value <= 0) cssStyle.defined.imageHeight = 0;
+    if (inlineImage && cssStyle.hasImageWidth() && cssStyle.imageWidth.value <= 0) cssStyle.defined.imageWidth = 0;
+    if (inlineImage && !cssStyle.hasImageHeight() && !cssStyle.hasImageWidth()) {
+      switch (kind) {
+        case GaijiKind::Square:
+          cssStyle.imageWidth = CssLength(1.0f, CssUnit::Em);
+          cssStyle.imageHeight = CssLength(1.0f, CssUnit::Em);
+          cssStyle.defined.imageWidth = cssStyle.defined.imageHeight = 1;
+          break;
+        case GaijiKind::Tall:
+          cssStyle.imageWidth = CssLength(1.0f, CssUnit::Em);
+          cssStyle.defined.imageWidth = 1;
+          break;
+        case GaijiKind::Wide:
+          cssStyle.imageHeight = CssLength(1.0f, CssUnit::Em);
+          cssStyle.defined.imageHeight = 1;
+          break;
+        case GaijiKind::None:
+          break;
+      }
+    }
     std::string src;
     std::string alt;
     if (atts != nullptr) {
@@ -1168,6 +1231,64 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
                   LOG_DBG("EHP", "Display size: %dx%d (scale %.2f)", displayWidth, displayHeight, scale);
                 }
 
+                if (inlineImage) {
+                  if (!self->currentTextBlock) {
+                    self->currentTextBlock = makeUniqueNoThrow<ParsedText>(
+                        self->hyphenationEnabled, self->focusReadingEnabled,
+                        self->blockStyleStack.back().withoutBottom(), self->paragraphIndentSpaces);
+                    if (!self->currentTextBlock) {
+                      LOG_ERR("EHP", "OOM: inline image paragraph");
+                      self->layoutOom = true;
+                      return;
+                    }
+                  }
+                  const auto& style = self->currentTextBlock->getBlockStyle();
+                  const int verticalInset = std::max(0, static_cast<int>(style.topInset())) +
+                                            std::max(0, static_cast<int>(style.bottomInset()));
+                  const int descent =
+                      self->verticalMode
+                          ? 0
+                          : std::max(0, self->renderer.getLineHeight(self->fontId, self->lineCompression) -
+                                            static_cast<int>(imageEm));
+                  // Leave room for ruby on any token sharing this line or column.
+                  const int rubyReserve = self->verticalMode
+                                              ? std::max(1, self->renderer.getVerticalCellSize(self->fontId) / 2)
+                                              : static_cast<int>(imageEm) / 2;
+                  const int maxWidth = std::max(1, containerWidth - (self->verticalMode ? rubyReserve : 0));
+                  const int maxHeight = std::max(1, static_cast<int>(self->viewportHeight) - verticalInset - descent -
+                                                        (self->verticalMode ? 0 : rubyReserve));
+                  const float scale =
+                      std::min(1.0f, std::min(static_cast<float>(maxWidth) / std::max(1, displayWidth),
+                                              static_cast<float>(maxHeight) / std::max(1, displayHeight)));
+                  displayWidth = std::max(1, static_cast<int>(displayWidth * scale));
+                  displayHeight = std::max(1, static_cast<int>(displayHeight * scale));
+                  const bool attached = self->partWordBufferIndex > 0 || self->nextWordContinues;
+                  if (self->partWordBufferIndex > 0) self->flushPartWordBuffer();
+                  uint8_t linkId = 0;
+                  if (self->insideFootnoteLink) {
+                    if (!self->currentTextBlock->linkTargetMatches(self->currentFootnoteLinkId,
+                                                                   self->currentFootnote.href))
+                      self->currentFootnoteLinkId = self->currentTextBlock->addLinkTarget(self->currentFootnote.href);
+                    linkId = self->currentFootnoteLinkId;
+                  }
+                  auto image =
+                      makeUniqueNoThrow<ImageBlock>(cachedImagePath, resolvedPath, displayWidth, displayHeight);
+                  if (!image) {
+                    LOG_ERR("EHP", "OOM: inline ImageBlock");
+                    self->layoutOom = true;
+                    return;
+                  }
+                  if (!self->currentTextBlock->addInlineImage(std::move(image), attached, self->visibleTextOffset,
+                                                              linkId)) {
+                    self->layoutOom = true;
+                    return;
+                  }
+                  self->nextWordContinues = true;
+                  self->softFlushText();
+                  ++self->depth;
+                  return;
+                }
+
                 // Flush any pending text block so it appears before the image
                 if (self->partWordBufferIndex > 0) {
                   self->flushPartWordBuffer();
@@ -1277,6 +1398,21 @@ void XMLCALL ChapterHtmlSlimParser::startElement(void* userData, const XML_Char*
             }
           }  // isFormatSupported
         }
+      }
+
+      // Character-image alt text stays in the sentence when decoding is unavailable.
+      if (inlineImage && !alt.empty()) {
+        const bool attached = self->partWordBufferIndex > 0 || self->nextWordContinues;
+        if (self->partWordBufferIndex > 0) self->flushPartWordBuffer();
+        self->nextWordContinues = attached;
+        self->syntheticCharacterData = true;
+        self->characterData(userData, alt.c_str(), alt.length());
+        self->syntheticCharacterData = false;
+        if (self->partWordBufferIndex > 0) self->flushPartWordBuffer();
+        self->nextWordContinues = true;
+        self->skipUntilDepth = self->depth;
+        ++self->depth;
+        return;
       }
 
       // Fallback to alt text if image processing fails
@@ -1820,20 +1956,23 @@ void XMLCALL ChapterHtmlSlimParser::characterData(void* userData, const XML_Char
     self->partWordBuffer[self->partWordBufferIndex++] = s[i];
   }
 
+  self->softFlushText();
+}
+
+void ChapterHtmlSlimParser::softFlushText() {
   // Block creation failed (OOM): nothing to soft-flush.
-  if (!self->currentTextBlock) {
+  if (!currentTextBlock) {
     return;
   }
 
   // Keep token growth bounded: CSS-heavy spans can fragment text into many tiny
   // words, so flush earlier when embedded CSS is active. We still keep the
   // "exclude last line" behavior to preserve paragraph flow across chunks.
-  const size_t blockWordCount = self->currentTextBlock->size();
-  const size_t softFlushThreshold =
-      self->embeddedStyle ? TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS : TEXT_BLOCK_SOFT_FLUSH_WORDS;
-  if (blockWordCount > softFlushThreshold && !self->inRuby) {
+  const size_t blockWordCount = currentTextBlock->size();
+  const size_t softFlushThreshold = embeddedStyle ? TEXT_BLOCK_SOFT_FLUSH_WORDS_WITH_CSS : TEXT_BLOCK_SOFT_FLUSH_WORDS;
+  if (blockWordCount > softFlushThreshold && !inRuby) {
     LOG_DBG("EHP", "Text block soft flush (%u words)", static_cast<unsigned>(blockWordCount));
-    self->makePages(/*includeLastLine=*/false);
+    makePages(/*includeLastLine=*/false);
   }
 }
 
@@ -2246,12 +2385,34 @@ bool ChapterHtmlSlimParser::parseAndBuildPages() {
   return finishParse();
 }
 
+bool ChapterHtmlSlimParser::addInlineImagesToPage(TextBlock& line, const int x, const int y) {
+  auto& images = line.getInlineImages();
+  const int baseline = renderer.getFontAscenderSize(fontId) + line.getRubyShift(renderer.getFontAscenderSize(fontId));
+  for (auto* chunk = images.firstChunk(); chunk; chunk = chunk->next.get()) {
+    for (size_t i = 0; i < chunk->count; ++i) {
+      auto& record = chunk->records[i];
+      const int imageX = verticalMode ? x + (line.getBlockStyle().verticalCellSize - record.width) / 2
+                                      : x + line.wordXpos(record.wordIndex);
+      const int imageY = verticalMode ? y + line.wordYpos(record.wordIndex) : y + baseline - record.height;
+      auto element = makeUniqueNoThrow<PageImage>(std::move(record.image), imageX, imageY);
+      if (!element) {
+        LOG_ERR("EHP", "OOM: inline PageImage");
+        layoutOom = true;
+        return false;
+      }
+      currentPage->elements.push_back(std::move(element));
+    }
+  }
+  return true;
+}
+
 void ChapterHtmlSlimParser::addLineToPage(std::unique_ptr<TextBlock> line, const uint32_t visibleOffset) {
   if (verticalMode) {
     const auto& style = line->getBlockStyle();
     const int cell = style.verticalCellSize;
     const int rubyWidth = line->hasRuby() ? std::max(1, cell / 2) : 0;
-    const int width = std::min<int>(viewportWidth, cell + rubyWidth);
+    const int contentWidth = std::max(cell, line->maxInlineWidth());
+    const int width = std::min<int>(viewportWidth, contentWidth + rubyWidth);
     const int pitch = std::max(width, renderer.getLineHeight(fontId, lineCompression));
     if (!currentPage || (!currentPage->elements.empty() && currentPageNextX + width > viewportWidth)) {
       if (currentPage && !currentPage->elements.empty()) {
@@ -2267,7 +2428,7 @@ void ChapterHtmlSlimParser::addLineToPage(std::unique_ptr<TextBlock> line, const
       currentPageNextX = 0;
       currentPageVisibleOffsetSet = false;
     }
-    const int x = std::max(0, static_cast<int>(viewportWidth) - currentPageNextX - width);
+    const int x = std::max(0, static_cast<int>(viewportWidth) - currentPageNextX - width) + (contentWidth - cell) / 2;
     const int y = std::clamp<int>(style.topInset(), 0, std::max(0, static_cast<int>(viewportHeight) - cell));
     setCurrentPageVisibleOffset(visibleOffset);
     wordsExtractedInBlock += line->wordCount();
@@ -2278,9 +2439,13 @@ void ChapterHtmlSlimParser::addLineToPage(std::unique_ptr<TextBlock> line, const
     }
     pendingFootnotes.erase(pendingFootnotes.begin(), fn);
     for (const auto& link : line->takeLinkSpans()) {
-      if (!currentPage->addLink(link.href, x, y + link.x, cell, link.width))
+      if (!currentPage->addLink(link.href, x - (contentWidth - cell) / 2, y + link.x, contentWidth, link.width))
         LOG_DBG("EHP", "Dropped vertical link: %.48s", link.href);
     }
+    const size_t needed = currentPage->elements.size() + line->getInlineImages().size() + 1;
+    if (currentPage->elements.capacity() < needed)
+      currentPage->elements.reserve(needed + std::max(1, static_cast<int>(viewportWidth) / pitch));
+    if (!addInlineImagesToPage(*line, x, y)) return;
     auto pageLine = makeUniqueNoThrow<PageLine>(std::move(line), x, y);
     if (!pageLine) {
       LOG_ERR("EHP", "OOM: vertical PageLine");
@@ -2294,8 +2459,10 @@ void ChapterHtmlSlimParser::addLineToPage(std::unique_ptr<TextBlock> line, const
     currentPageNextX = static_cast<int16_t>(std::min<int>(INT16_MAX, currentPageNextX + pitch));
     return;
   }
-  const int lineHeight =
-      renderer.getLineHeight(fontId, lineCompression) + line->getRubyShift(renderer.getFontAscenderSize(fontId));
+  const int extraLift = std::max(0, line->maxInlineHeight() - renderer.getFontAscenderSize(fontId));
+  const int minimumHeight = line->maxInlineHeight() > 0 ? renderer.getFontAscenderSize(fontId) : 0;
+  const int lineHeight = std::max(minimumHeight, renderer.getLineHeight(fontId, lineCompression)) +
+                         line->getRubyShift(renderer.getFontAscenderSize(fontId)) + extraLift;
 
   if (!currentPage) {
     currentPage = makeUniqueNoThrow<Page>();
@@ -2340,12 +2507,16 @@ void ChapterHtmlSlimParser::addLineToPage(std::unique_ptr<TextBlock> line, const
   const int baseLineHeight = renderer.getLineHeight(fontId, lineCompression);
   for (const auto& link : line->takeLinkSpans()) {
     if (!currentPage->addLink(link.href, static_cast<int16_t>(xOffset + link.x),
-                              static_cast<int16_t>(currentPageNextY + rubyShift - link.topLift), link.width,
+                              static_cast<int16_t>(currentPageNextY + extraLift + rubyShift - link.topLift), link.width,
                               static_cast<int16_t>(baseLineHeight + link.topLift))) {
       LOG_DBG("EHP", "Dropped page link: %.48s", link.href);
     }
   }
-  auto pageLine = makeUniqueNoThrow<PageLine>(std::move(line), xOffset, currentPageNextY);
+  const size_t needed = currentPage->elements.size() + line->getInlineImages().size() + 1;
+  if (currentPage->elements.capacity() < needed)
+    currentPage->elements.reserve(needed + std::max(1, static_cast<int>(viewportHeight) / lineHeight));
+  if (!addInlineImagesToPage(*line, xOffset, currentPageNextY + extraLift)) return;
+  auto pageLine = makeUniqueNoThrow<PageLine>(std::move(line), xOffset, currentPageNextY + extraLift);
   if (!pageLine) {
     LOG_ERR("EHP", "OOM: PageLine");
     layoutOom = true;

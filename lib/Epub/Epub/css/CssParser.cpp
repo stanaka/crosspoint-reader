@@ -231,7 +231,8 @@ bool decodeStyleWire(const uint8_t (&in)[STYLE_WIRE_BYTES], CssStyle& style) {
   const uint8_t display = in[offset++];
   const uint8_t verticalAlign = in[offset++];
   const uint8_t listStyleType = in[offset++];
-  if (display > static_cast<uint8_t>(CssDisplay::None) || verticalAlign > static_cast<uint8_t>(CssVerticalAlign::Sub) ||
+  if (display > static_cast<uint8_t>(CssDisplay::InlineBlock) ||
+      verticalAlign > static_cast<uint8_t>(CssVerticalAlign::Sub) ||
       listStyleType > static_cast<uint8_t>(CssListStyleType::None)) {
     return false;
   }
@@ -623,7 +624,15 @@ void CssParser::parseDeclarationIntoStyle(std::string_view decl, CssStyle& style
       style.defined.imageWidth = 1;
     }
   } else if (iequalsAscii(name, "display")) {
-    style.display = iequalsAscii(value, "none") ? CssDisplay::None : CssDisplay::Block;
+    if (iequalsAscii(value, "none")) {
+      style.display = CssDisplay::None;
+    } else if (iequalsAscii(value, "inline")) {
+      style.display = CssDisplay::Inline;
+    } else if (iequalsAscii(value, "inline-block")) {
+      style.display = CssDisplay::InlineBlock;
+    } else {
+      style.display = CssDisplay::Block;
+    }
     style.defined.display = 1;
   } else if (iequalsAscii(name, "writing-mode") || iequalsAscii(name, "-epub-writing-mode") ||
              iequalsAscii(name, "-webkit-writing-mode")) {

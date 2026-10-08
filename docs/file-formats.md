@@ -91,6 +91,16 @@ if (parsedSize != fileSize) {
 
 ## `section.bin`
 
+### Version 57
+
+Inline gaiji images participate in line and column layout. Each TextBlock appends
+an inline-image count and sparse `(wordIndex, width, height)` records (three
+`uint16_t` fields). Image tokens have empty word text; their dimensions supply
+flow extents for ruby and selection. Their pixels and source paths remain in
+positioned PageImage elements. Older section caches are regenerated without
+clearing progress. The CSS cache is version 14 to preserve `display: inline`
+and `inline-block` separately from `block`.
+
 ### Version 56
 
 Vertical EPUB reading adds requested `writingMode` (0=Auto, 1=Horizontal,
@@ -229,7 +239,7 @@ import std.mem;
 import std.string;
 import std.core;
 
-#define EXPECTED_VERSION 56
+#define EXPECTED_VERSION 57
 #define MAX_STRING_LENGTH 65535
 #define FOOTNOTE_NUMBER_LEN 32
 #define FOOTNOTE_HREF_LEN 256
@@ -310,7 +320,14 @@ struct TextBlock {
         char text[textBytes] [[comment("All words back to back, each NUL-terminated")]];
     }
 
+    String rubyTexts[wordCount];
     BlockStyle blockStyle;
+    u16 inlineImageCount;
+    struct InlineImageDimensions {
+        u16 wordIndex;
+        u16 width;
+        u16 height;
+    } inlineImages[inlineImageCount];
 };
 
 struct ImageBlock {
