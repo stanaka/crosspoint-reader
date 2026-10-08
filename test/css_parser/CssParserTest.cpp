@@ -307,4 +307,24 @@ TEST_F(CssParserTest, WritingModeAliasesCascadeAndSurviveCache) {
   EXPECT_EQ(cached.resolveStyle("body", "").writingMode, WritingMode::Horizontal);
 }
 
+TEST_F(CssParserTest, InlineImageDisplayValuesSurviveCache) {
+  CssParser writer(cachePath());
+  ASSERT_EQ(
+      loadCss(
+          writer,
+          "img.a { display:inline; height:1em; } img.b { display:inline-block; width:2em; } img.c { display:block; }"),
+      CssParser::ParseResult::Complete);
+  ASSERT_TRUE(writer.saveToCache(true));
+  CssParser reader(cachePath());
+  ASSERT_EQ(reader.loadFromCache(), CssParser::CacheLoadResult::Complete);
+  EXPECT_EQ(reader.resolveStyle("img", "a").display, CssDisplay::Inline);
+  EXPECT_EQ(reader.resolveStyle("img", "b").display, CssDisplay::InlineBlock);
+  EXPECT_EQ(reader.resolveStyle("img", "c").display, CssDisplay::Block);
+  auto bytes = readCache();
+  bytes[0] = 13;
+  writeCache(bytes);
+  CssParser outdated(cachePath());
+  EXPECT_EQ(outdated.loadFromCache(), CssParser::CacheLoadResult::Invalid);
+}
+
 }  // namespace

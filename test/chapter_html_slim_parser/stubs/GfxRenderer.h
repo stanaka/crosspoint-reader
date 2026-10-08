@@ -14,6 +14,7 @@ enum class BidiBaseDir : signed char { AUTO = -1, LTR = 0, RTL = 1 };
 class GfxRenderer {
  public:
   bool wideBold = false;
+  int lineHeight = 16;
   enum class TextMeasureMode { Layout, Rendered };
   // The fixture has no framebuffer to lend; image probes run as without a loan.
   class FrameBufferLoan {
@@ -35,7 +36,7 @@ class GfxRenderer {
   }
   int getScreenWidth() const { return 480; }
   int getScreenHeight() const { return 800; }
-  int getLineHeight(int, float = 1.0f) const { return 16; }
+  int getLineHeight(int, float = 1.0f) const { return lineHeight; }
   int getFontAscenderSize(int) const { return 12; }
   int getSpaceWidth(int, EpdFontFamily::Style) const { return 4; }
   int getTextAdvanceX(int, const char* text, EpdFontFamily::Style style, int8_t tracking = 0,

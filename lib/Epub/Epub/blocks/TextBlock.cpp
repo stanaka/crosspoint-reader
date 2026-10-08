@@ -127,6 +127,20 @@ TextBlock::TextBlock(const std::vector<std::string>& words, const std::vector<in
   }
 }
 
+int TextBlock::maxInlineHeight() const {
+  int maximum = 0;
+  for (auto* chunk = inlineImages.firstChunk(); chunk; chunk = chunk->next.get())
+    for (size_t i = 0; i < chunk->count; ++i) maximum = std::max<int>(maximum, chunk->records[i].height);
+  return maximum;
+}
+
+int TextBlock::maxInlineWidth() const {
+  int maximum = 0;
+  for (auto* chunk = inlineImages.firstChunk(); chunk; chunk = chunk->next.get())
+    for (size_t i = 0; i < chunk->count; ++i) maximum = std::max<int>(maximum, chunk->records[i].width);
+  return maximum;
+}
+
 bool TextBlock::hasRuby() const {
   for (const auto& rt : rubyTexts) {
     if (!rt.empty()) return true;
@@ -146,7 +160,9 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
       const auto style = wordStyle(i);
       const char* text = wordText(i);
       const uint8_t boundary = focusBoundary(i);
-      if (boundary && verticalText::classify(text) == verticalText::Behavior::Sideways) {
+      if (inlineImages.find(i)) {
+        // PageImage renders the object; ruby below still belongs to this token.
+      } else if (boundary && verticalText::classify(text) == verticalText::Behavior::Sideways) {
         char prefix[40];
         const size_t bytes = std::min<size_t>(boundary, sizeof(prefix) - 1);
         memcpy(prefix, text, bytes);
@@ -171,7 +187,8 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
         const int rubyCell = std::max(1, std::min(cell / 2, baseExtent / std::max(1, count)));
         const int rubyHeight = count * rubyCell;
         const int rubyY = yy + std::max(0, (baseExtent - rubyHeight) / 2);
-        renderer.drawVerticalToken(fontId, x + cell, rubyY, rubyTexts[i].c_str(), EpdFontFamily::SUP, rubyCell, 0, true,
+        const int rubyX = x + cell + (std::max(0, maxInlineWidth() - cell) + 1) / 2;
+        renderer.drawVerticalToken(fontId, rubyX, rubyY, rubyTexts[i].c_str(), EpdFontFamily::SUP, rubyCell, 0, true,
                                    true);
       }
       if (!renderer.isFontCacheScanning() && EpdFontFamily::hasTextDecoration(style)) {
@@ -207,7 +224,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
         }
         int groupActualWidth = 0;
         for (int k = 0; k < groupWordCount; ++k) {
-          groupActualWidth += renderer.getTextAdvanceX(fontId, wordText(i + k), wordStyle(i + k), tracking);
+          groupActualWidth += wordFlowExtent(renderer, fontId, i + k);
         }
         const int rubyWidth = renderer.getTextAdvanceX(fontId, rubyTexts[i].c_str(), EpdFontFamily::SUP, tracking);
         const int leaderWordX = xposArr[i] + x;
@@ -276,7 +293,9 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
 
     const int drawX = wordX;
 
-    if (boundary > 0) {
+    if (inlineImages.find(i)) {
+      // Image pixels are emitted through PageImage, including grayscale passes.
+    } else if (boundary > 0) {
       // Focus split: draw bold prefix, then the regular suffix at a pre-computed x offset.
       // The bold prefix is bounded to 9 codepoints by the clamp on targetBoldChars in
       // ParsedText::addWord; 9 UTF-8 codepoints occupy at most 9 * 4 = 36 bytes, +1 for null = 37.
@@ -305,7 +324,7 @@ void TextBlock::render(const GfxRenderer& renderer, const int fontId, const int 
                         tracking);
     }
 
-    if (scanning) {
+    if (scanning || inlineImages.find(i)) {
       continue;
     }
 
@@ -391,6 +410,22 @@ bool TextBlock::serialize(HalFile& file) const {
   serialization::writePod(file, blockStyle.vertical);
   serialization::writePod(file, blockStyle.verticalCellSize);
   serialization::writePod(file, blockStyle.verticalCharSpacing);
+
+  const uint16_t imageCount = inlineImages.size();
+  if (file.write(&imageCount, sizeof(imageCount)) != sizeof(imageCount)) {
+    LOG_ERR("TXB", "Serialization failed: inline image count");
+    return false;
+  }
+  for (auto* chunk = inlineImages.firstChunk(); chunk; chunk = chunk->next.get()) {
+    for (size_t i = 0; i < chunk->count; ++i) {
+      const auto& record = chunk->records[i];
+      const uint16_t fields[] = {static_cast<uint16_t>(record.wordIndex), record.width, record.height};
+      if (file.write(fields, sizeof(fields)) != sizeof(fields)) {
+        LOG_ERR("TXB", "Serialization failed: inline image dimensions");
+        return false;
+      }
+    }
+  }
 
   return true;
 }
@@ -500,10 +535,31 @@ std::unique_ptr<TextBlock> TextBlock::deserialize(HalFile& file) {
   }
   blockStyle.vertical = vertical != 0;
 
+  uint16_t imageCount = 0;
+  if (file.read(&imageCount, sizeof(imageCount)) != sizeof(imageCount) || imageCount > wc) {
+    LOG_ERR("TXB", "Invalid inline image count");
+    return nullptr;
+  }
+  for (uint16_t i = 0; i < imageCount; ++i) {
+    uint16_t fields[3];
+    if (file.read(fields, sizeof(fields)) != sizeof(fields) || fields[0] >= wc || fields[1] == 0 || fields[2] == 0 ||
+        fields[1] > INT16_MAX || fields[2] > INT16_MAX || block->wordTextLen(fields[0]) != 0 ||
+        block->focusBoundary(fields[0]) != 0 || block->inlineImages.find(fields[0])) {
+      LOG_ERR("TXB", "Invalid inline image dimensions");
+      return nullptr;
+    }
+    if (!block->inlineImages.append(fields[0], fields[1], fields[2])) {
+      LOG_ERR("TXB", "OOM: cached inline image chunk (%u bytes)",
+              static_cast<unsigned>(sizeof(InlineImageStore::Chunk)));
+      return nullptr;
+    }
+  }
+
   return block;
 }
 
 int TextBlock::wordFlowExtent(const GfxRenderer& renderer, const int fontId, const uint16_t i) const {
+  if (const auto* image = inlineImages.find(i)) return isVertical() ? image->height : image->width;
   if (!isVertical()) return renderer.getTextAdvanceX(fontId, wordText(i), wordStyle(i), blockStyle.characterSpacing);
   if (focusBoundary(i) && verticalText::classify(wordText(i)) == verticalText::Behavior::Sideways)
     return focusSuffixX(i) + renderer.getVerticalTextAdvance(fontId, wordText(i) + focusBoundary(i), wordStyle(i),

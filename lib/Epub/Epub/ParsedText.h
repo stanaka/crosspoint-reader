@@ -8,6 +8,7 @@
 #include <string>
 #include <vector>
 
+#include "InlineImageStore.h"
 #include "WordStore.h"
 #include "blocks/BlockStyle.h"
 #include "blocks/TextBlock.h"
@@ -28,6 +29,7 @@ class ParsedText {
   // The per-token parallel arrays below stay vectors: 1 byte / 1 bit each,
   // they never approach the contiguous-block ceiling.
   WordStore wordStore;
+  InlineImageStore inlineImages;
   std::deque<WordStore::StoredWord> words;
   std::vector<EpdFontFamily::Style> wordStyles;
   // Boundary flags use all four combinations:
@@ -77,6 +79,9 @@ class ParsedText {
 
   std::string_view wordAt(const size_t i) const { return wordStore.view(words[i]); }
   bool storeWord(std::string_view text, WordStore::StoredWord& out);
+  void ensureTokenCapacity(size_t additionalTokens);
+  int measureToken(const GfxRenderer& renderer, int fontId, size_t index) const;
+  bool transferInlineImages(TextBlock& block, size_t start, size_t count, bool reordered = false);
   uint32_t visibleOffsetBaseAt(size_t wordIndex) const;
   uint32_t visibleOffsetAt(size_t wordIndex) const;
   void pushVisibleOffset(uint32_t offset);
@@ -118,6 +123,8 @@ class ParsedText {
 
   void addWord(std::string word, EpdFontFamily::Style fontStyle, bool underline = false, bool attachToPrevious = false,
                uint32_t visibleTextOffset = 0, uint8_t linkId = 0);
+  bool addInlineImage(std::unique_ptr<ImageBlock> image, bool attachToPrevious, uint32_t visibleTextOffset = 0,
+                      uint8_t linkId = 0);
   uint8_t addLinkTarget(const char* href);
   bool linkTargetMatches(uint8_t linkId, const char* href) const;
   void setRubyForWordAt(size_t index, const std::string& ruby);

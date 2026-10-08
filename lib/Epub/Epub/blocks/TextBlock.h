@@ -10,6 +10,7 @@
 #include "Block.h"
 #include "BlockStyle.h"
 #include "Epub/FootnoteEntry.h"
+#include "Epub/InlineImageStore.h"
 
 // Represents a line of text on a page.
 //
@@ -49,11 +50,12 @@ class TextBlock final : public Block {
 
  private:
   BlockStyle blockStyle;
+  InlineImageStore inlineImages;
   uint16_t numWords = 0;
   uint16_t textBytes = 0;  // total size of the text region, including NULs
   bool focusPresent = false;
   bool isValid = true;
-  // The ONLY allocation: makeUniqueNoThrow, so OOM yields an invalid block
+  // Text arena allocation: makeUniqueNoThrow, so OOM yields an invalid block
   // instead of abort() (bare new is not nothrow with -fno-exceptions).
   std::unique_ptr<uint8_t[]> arena;
   // Typed views into the arena, bound once after the arena is filled. All
@@ -104,6 +106,10 @@ class TextBlock final : public Block {
   EpdFontFamily::Style wordStyle(const uint16_t i) const { return static_cast<EpdFontFamily::Style>(stylesArr[i]); }
   uint8_t focusBoundary(const uint16_t i) const { return focusPresent ? focusBoundaryArr[i] : 0; }
   uint16_t focusSuffixX(const uint16_t i) const { return focusPresent ? focusSuffixXArr[i] : 0; }
+  InlineImageStore& getInlineImages() { return inlineImages; }
+  const InlineImageStore& getInlineImages() const { return inlineImages; }
+  int maxInlineHeight() const;
+  int maxInlineWidth() const;
   bool hasRuby() const;
   int getRubyShift(int ascender) const { return hasRuby() ? (ascender / 2) : 0; }
   const std::vector<std::string>& getRubyTexts() const { return rubyTexts; }
