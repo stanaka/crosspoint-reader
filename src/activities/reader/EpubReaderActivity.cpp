@@ -496,10 +496,8 @@ void EpubReaderActivity::loop() {
     pendingReadFolderMove = false;
   }
 
-  const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput,
-                                                      (section && section->isVertical()) ||
-                                                          epub->getPageProgression() == PageProgression::Rtl ||
-                                                          ReaderUtils::isRtlBookLanguage(epub->getLanguage()));
+  const bool rtlBook = epub->getPageProgression() == PageProgression::Rtl;
+  const auto touch = ReaderUtils::detectTouchPageTurn(renderer, mappedInput, rtlBook);
 
   if (showBookmarkMessage && (millis() - bookmarkMessageTime) >= ReaderUtils::BOOKMARK_MESSAGE_DURATION_MS) {
     showBookmarkMessage = false;
@@ -703,8 +701,7 @@ void EpubReaderActivity::loop() {
     return;
   }
 
-  auto [prevTriggered, nextTriggered, fromTilt] =
-      ReaderUtils::detectPageTurn(mappedInput, section && section->isVertical());
+  auto [prevTriggered, nextTriggered, fromTilt] = ReaderUtils::detectPageTurn(mappedInput, rtlBook);
   prevTriggered = prevTriggered || touch.prev;
   nextTriggered = nextTriggered || touch.next;
   if (!prevTriggered && !nextTriggered) {
