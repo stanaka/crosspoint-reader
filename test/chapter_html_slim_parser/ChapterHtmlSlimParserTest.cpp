@@ -471,7 +471,7 @@ TEST(KoreanLayout, HangulGluedAcrossInlineStyleIsUnbreakable) {
   EXPECT_EQ(lines, expected);
 }
 
-TEST(VerticalTextBehavior, LanguageHeuristicAndButtonDirectionAreExplicit) {
+TEST(VerticalTextBehavior, LanguageHeuristicAndTokenBehaviorAreExplicit) {
   for (const char* language : {"ja", "JA-jp", "jpn", "zh-Hant", "ZHO"}) {
     EXPECT_TRUE(verticalText::languageFallback(language, PageProgression::Rtl));
     EXPECT_FALSE(verticalText::languageFallback(language, PageProgression::Ltr));
@@ -482,12 +482,24 @@ TEST(VerticalTextBehavior, LanguageHeuristicAndButtonDirectionAreExplicit) {
   EXPECT_EQ(verticalText::classify("A"), verticalText::Behavior::Sideways);
   EXPECT_EQ(verticalText::classify("12"), verticalText::Behavior::TateChuYoko);
   EXPECT_EQ(verticalText::classify("123"), verticalText::Behavior::Sideways);
-  const auto horizontal = verticalText::pageButtons(false, true, false);
-  EXPECT_TRUE(horizontal.next);
-  EXPECT_FALSE(horizontal.prev);
-  const auto vertical = verticalText::pageButtons(false, true, true);
-  EXPECT_FALSE(vertical.next);
-  EXPECT_TRUE(vertical.prev);
+}
+
+TEST(VerticalTextBehavior, PageButtonsFollowBookProgression) {
+  static constexpr struct {
+    bool prev;
+    bool next;
+    bool rtlBook;
+    bool expectedPrev;
+    bool expectedNext;
+  } cases[] = {{false, false, false, false, false}, {true, false, false, true, false},
+               {false, true, false, false, true},   {true, true, false, true, true},
+               {false, false, true, false, false},  {true, false, true, false, true},
+               {false, true, true, true, false},    {true, true, true, true, true}};
+  for (const auto& testCase : cases) {
+    const auto buttons = verticalText::pageButtons(testCase.prev, testCase.next, testCase.rtlBook);
+    EXPECT_EQ(buttons.prev, testCase.expectedPrev);
+    EXPECT_EQ(buttons.next, testCase.expectedNext);
+  }
 }
 
 TEST_F(ChapterHtmlSlimParserTest, AutoHonorsRootAndBodyWithoutEmbeddedAppearance) {

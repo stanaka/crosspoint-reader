@@ -6,9 +6,6 @@
 #include <HalTiltSensor.h>
 #include <Logging.h>
 
-#include <cctype>
-#include <string_view>
-
 #include "HapticFeedback.h"
 #include "MappedInputManager.h"
 #include "activities/ActivityManager.h"
@@ -28,14 +25,6 @@ inline bool gestureAllowsSwipe(const uint8_t gesture) {
 inline bool gestureAllowsTap(const uint8_t gesture) {
   return gesture == CrossPointSettings::TAP_AND_SWIPE || gesture == CrossPointSettings::TAP_ONLY ||
          gesture == CrossPointSettings::INVERTED_TAP;
-}
-
-inline bool isRtlBookLanguage(std::string_view tag) {
-  if (tag.size() < 2 || (tag.size() > 2 && tag[2] != '-' && tag[2] != '_')) return false;
-  const auto first = std::tolower(static_cast<unsigned char>(tag[0]));
-  const auto second = std::tolower(static_cast<unsigned char>(tag[1]));
-  return (first == 'h' && second == 'e') || (first == 'i' && second == 'w') || (first == 'a' && second == 'r') ||
-         (first == 'f' && second == 'a');
 }
 
 inline void applyOrientation(GfxRenderer& renderer, const uint8_t orientation) {
@@ -63,7 +52,7 @@ struct PageTurnResult {
   bool fromTilt;
 };
 
-inline PageTurnResult detectPageTurn(const MappedInputManager& input, const bool vertical = false) {
+inline PageTurnResult detectPageTurn(const MappedInputManager& input, const bool rtlBook = false) {
   const bool usePress = SETTINGS.longPressButtonBehavior == SETTINGS.OFF;
   const bool tiltNext = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedForward();
   const bool tiltPrev = SETTINGS.tiltPageTurn && halTiltSensor.wasTiltedBack();
@@ -77,7 +66,7 @@ inline PageTurnResult detectPageTurn(const MappedInputManager& input, const bool
   const bool buttonPrev = pageButtonTriggered(MappedInputManager::Button::PageBack) || pageButtonTriggered(prevButton);
   const bool buttonNext =
       pageButtonTriggered(MappedInputManager::Button::PageForward) || pageButtonTriggered(nextButton);
-  const auto buttons = verticalText::pageButtons(buttonPrev, buttonNext, vertical);
+  const auto buttons = verticalText::pageButtons(buttonPrev, buttonNext, rtlBook);
   const bool prev = tiltPrev || buttons.prev;
   const bool powerTurn = SETTINGS.shortPwrBtn == CrossPointSettings::SHORT_PWRBTN::PAGE_TURN &&
                          input.wasReleased(MappedInputManager::Button::Power);

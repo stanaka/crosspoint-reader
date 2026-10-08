@@ -279,3 +279,12 @@ TEST(ContentOpfParserMetadata, ReadsSpinePageProgression) {
     EXPECT_EQ(parser.pageProgression, expected);
   }
 }
+
+TEST(ContentOpfParserMetadata, MissingSpinePageProgressionUsesDefaultRegardlessOfLanguage) {
+  const std::string xml = R"(<package xmlns:dc="urn:dc"><metadata><dc:language>ar</dc:language></metadata>
+    <spine/></package>)";
+  ContentOpfParser parser("", "", xml.size(), nullptr);
+  parse(parser, xml);
+  EXPECT_EQ(parser.language, "ar");
+  EXPECT_EQ(parser.pageProgression, PageProgression::Default);
+}

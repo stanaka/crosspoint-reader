@@ -22,8 +22,8 @@ struct PageButtons {
   bool prev;
   bool next;
 };
-constexpr PageButtons pageButtons(bool prev, bool next, bool vertical) {
-  return vertical ? PageButtons{next, prev} : PageButtons{prev, next};
+constexpr PageButtons pageButtons(bool prev, bool next, bool rtlBook) {
+  return rtlBook ? PageButtons{next, prev} : PageButtons{prev, next};
 }
 
 constexpr uint32_t firstCodepoint(std::string_view text) {
