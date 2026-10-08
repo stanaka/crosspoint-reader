@@ -17,7 +17,7 @@ namespace {
 constexpr size_t kMaxRules = 1500;
 constexpr size_t kMaxUniqueStyles = 256;
 constexpr size_t kCacheHeaderBytes = sizeof(uint8_t) * 2 + sizeof(uint16_t);
-constexpr size_t kStyleEnumPrefixBytes = 5;
+constexpr size_t kStyleEnumPrefixBytes = 6;
 constexpr size_t kStyleLengthFieldCount = 11;
 constexpr size_t kStyleLengthBytes = sizeof(decltype(CssLength::value)) + sizeof(uint8_t);
 
@@ -287,6 +287,24 @@ TEST_F(CssParserTest, CacheHydrationRejectsNonFiniteStyleLengths) {
     EXPECT_EQ(reader.loadFromCache(), CssParser::CacheLoadResult::Invalid);
     EXPECT_TRUE(reader.empty());
   }
+}
+
+TEST_F(CssParserTest, WritingModeAliasesCascadeAndSurviveCache) {
+  for (const char* alias : {"writing-mode", "-epub-writing-mode", "-webkit-writing-mode"}) {
+    const auto style = CssParser::parseInlineStyle(std::string(alias) + ":vertical-rl !important");
+    EXPECT_TRUE(style.hasWritingMode());
+    EXPECT_EQ(style.writingMode, WritingMode::Vertical);
+  }
+  CssParser parser(cachePath());
+  loadCss(parser, "html { writing-mode: vertical-rl; } body { writing-mode: horizontal-tb; }");
+  EXPECT_EQ(parser.resolveStyle("html", "").writingMode, WritingMode::Vertical);
+  EXPECT_EQ(parser.resolveStyle("body", "").writingMode, WritingMode::Horizontal);
+  ASSERT_TRUE(parser.saveToCache(true));
+  CssParser cached(cachePath());
+  ASSERT_EQ(cached.loadFromCache(), CssParser::CacheLoadResult::Complete);
+  EXPECT_EQ(cached.resolveStyle("html", "").writingMode, WritingMode::Vertical);
+  EXPECT_TRUE(cached.resolveStyle("body", "").hasWritingMode());
+  EXPECT_EQ(cached.resolveStyle("body", "").writingMode, WritingMode::Horizontal);
 }
 
 }  // namespace

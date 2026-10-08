@@ -267,3 +267,15 @@ TEST(ContentOpfParserCover, ReadingParserStillOpensManifestCache) {
   EXPECT_EQ(Storage.writeOpens, 1);
   EXPECT_EQ(Storage.readOpens, 1);
 }
+
+TEST(ContentOpfParserMetadata, ReadsSpinePageProgression) {
+  for (const auto& [attribute, expected] : {std::pair{"rtl", PageProgression::Rtl},
+                                            {"ltr", PageProgression::Ltr},
+                                            {"default", PageProgression::Default},
+                                            {"invalid", PageProgression::Default}}) {
+    const std::string xml = std::string("<package><spine page-progression-direction=\"") + attribute + "\"/></package>";
+    ContentOpfParser parser("", "", xml.size(), nullptr);
+    parse(parser, xml);
+    EXPECT_EQ(parser.pageProgression, expected);
+  }
+}

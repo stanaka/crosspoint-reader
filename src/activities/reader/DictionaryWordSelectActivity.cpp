@@ -54,7 +54,8 @@ void DictionaryWordSelectActivity::onEnter() {
   // Start on the middle row's word nearest mid-screen instead of top-left:
   // any word on the page is then at most half a page of moves away.
   if (!words.empty()) {
-    const int initial = closestInRow(rowCount / 2, renderer.getScreenWidth() / 2);
+    const int initial =
+        closestInRow(rowCount / 2, (vertical ? renderer.getScreenHeight() : renderer.getScreenWidth()) / 2);
     if (initial >= 0) selected = initial;
   }
   requestUpdate();
@@ -80,6 +81,7 @@ void DictionaryWordSelectActivity::extractWords() {
     const auto* block = line->getBlock();
     if (!block || !block->valid()) continue;
 
+    vertical = block->isVertical();
     bool rowHasWords = false;
     const int ascender = renderer.getFontAscenderSize(fontId);
     const int rubyShift = block->getRubyShift(ascender);
@@ -89,8 +91,9 @@ void DictionaryWordSelectActivity::extractWords() {
 
       WordBox box;
       box.x = static_cast<int16_t>(line->xPos + block->wordXpos(i) + marginLeft);
-      box.y = static_cast<int16_t>(line->yPos + marginTop + rubyShift);
+      box.y = static_cast<int16_t>(line->yPos + marginTop + block->wordYpos(i) + (vertical ? 0 : rubyShift));
       box.style = block->wordStyle(i);
+      box.height = vertical ? block->wordFlowExtent(renderer, fontId, i) : lineHeight;
       box.width = 0;  // measured below, once the advance table is ready
       box.row = rowCount;
       box.text = text;
@@ -107,7 +110,8 @@ void DictionaryWordSelectActivity::extractWords() {
   if (styleMask == 0) styleMask = 0x01;  // REGULAR
   renderer.ensureSdCardFontReady(fontId, pageText.c_str(), styleMask);
   for (auto& word : words) {
-    word.width = static_cast<int16_t>(renderer.getTextAdvanceX(fontId, word.text, word.style));
+    word.width = static_cast<int16_t>(vertical ? renderer.getVerticalCellSize(fontId)
+                                               : renderer.getTextAdvanceX(fontId, word.text, word.style));
   }
 }
 
@@ -118,7 +122,7 @@ int DictionaryWordSelectActivity::wordAt(const int x, const int y) const {
   constexpr int SLOP = 4;  // matches the highlight box (+2) plus finger error
   for (int i = 0; i < static_cast<int>(words.size()); i++) {
     const WordBox& word = words[i];
-    if (x >= word.x - SLOP && x < word.x + word.width + SLOP && y >= word.y - SLOP && y < word.y + lineHeight + SLOP) {
+    if (x >= word.x - SLOP && x < word.x + word.width + SLOP && y >= word.y - SLOP && y < word.y + word.height + SLOP) {
       return i;
     }
   }
@@ -132,7 +136,8 @@ int DictionaryWordSelectActivity::closestInRow(const uint16_t row, const int cen
   int bestDistance = INT_MAX;
   for (int i = 0; i < static_cast<int>(words.size()); i++) {
     if (words[i].row != row) continue;
-    const int distance = std::abs(words[i].x + words[i].width / 2 - centerX);
+    const int distance =
+        std::abs((vertical ? words[i].y + words[i].height / 2 : words[i].x + words[i].width / 2) - centerX);
     if (distance < bestDistance) {
       bestDistance = distance;
       best = i;
@@ -146,7 +151,8 @@ void DictionaryWordSelectActivity::moveVertical(const int direction) {
   const int targetRow = static_cast<int>(current.row) + direction;
   if (targetRow < 0 || targetRow >= static_cast<int>(rowCount)) return;
 
-  const int best = closestInRow(static_cast<uint16_t>(targetRow), current.x + current.width / 2);
+  const int best = closestInRow(static_cast<uint16_t>(targetRow),
+                                vertical ? current.y + current.height / 2 : current.x + current.width / 2);
   if (best >= 0 && best != selected) {
     selected = best;
     requestUpdate();
@@ -276,10 +282,10 @@ void DictionaryWordSelectActivity::loop() {
   const unsigned long now = millis();
   const bool repeat =
       mappedInput.getHeldTime() >= WORD_REPEAT_START_MS && now - lastHorizontalMoveTime >= WORD_REPEAT_INTERVAL_MS;
-  const bool moveLeft = mappedInput.wasPressed(MappedInputManager::Button::ScreenLeft) ||
-                        (repeat && mappedInput.isPressed(MappedInputManager::Button::ScreenLeft));
-  const bool moveRight = mappedInput.wasPressed(MappedInputManager::Button::ScreenRight) ||
-                         (repeat && mappedInput.isPressed(MappedInputManager::Button::ScreenRight));
+  const auto previousWord = vertical ? MappedInputManager::Button::ScreenUp : MappedInputManager::Button::ScreenLeft;
+  const auto nextWord = vertical ? MappedInputManager::Button::ScreenDown : MappedInputManager::Button::ScreenRight;
+  const bool moveLeft = mappedInput.wasPressed(previousWord) || (repeat && mappedInput.isPressed(previousWord));
+  const bool moveRight = mappedInput.wasPressed(nextWord) || (repeat && mappedInput.isPressed(nextWord));
   if (moveLeft && selected > 0) {
     selected--;
     lastHorizontalMoveTime = now;
@@ -288,9 +294,11 @@ void DictionaryWordSelectActivity::loop() {
     selected++;
     lastHorizontalMoveTime = now;
     requestUpdate();
-  } else if (mappedInput.wasPressed(MappedInputManager::Button::ScreenUp)) {
+  } else if (mappedInput.wasPressed(vertical ? MappedInputManager::Button::ScreenRight
+                                             : MappedInputManager::Button::ScreenUp)) {
     moveVertical(-1);
-  } else if (mappedInput.wasPressed(MappedInputManager::Button::ScreenDown)) {
+  } else if (mappedInput.wasPressed(vertical ? MappedInputManager::Button::ScreenLeft
+                                             : MappedInputManager::Button::ScreenDown)) {
     moveVertical(1);
   }
 }
@@ -304,7 +312,7 @@ bool DictionaryWordSelectActivity::drawHighlightWithSnapshot() {
   int hx = word.x - 2;
   int hy = word.y - 2;
   int hw = word.width + 4;
-  int hh = lineHeight + 4;
+  int hh = word.height + 4;
   // Clamp to the panel so save, draw and restore all use the same box.
   if (hx < 0) {
     hw += hx;
@@ -326,7 +334,12 @@ bool DictionaryWordSelectActivity::drawHighlightWithSnapshot() {
   snapshotIdx = saved ? selected : -1;
 
   renderer.fillRect(hx, hy, hw, hh, true);
-  renderer.drawText(fontId, word.x, word.y, word.text, false, word.style);
+  if (vertical) {
+    renderer.drawVerticalToken(fontId, word.x, word.y, word.text, word.style, word.width, SETTINGS.verticalCharSpacing,
+                               false);
+  } else {
+    renderer.drawText(fontId, word.x, word.y, word.text, false, word.style);
+  }
   return saved;
 }
 

@@ -265,6 +265,13 @@ inline std::vector<SettingInfo> getSettingsList(const SdCardFontRegistry* regist
                             StrId::STR_CAT_DISPLAY),
 
         // --- Reader ---
+        SettingInfo::Enum(StrId::STR_WRITING_MODE, &CrossPointSettings::writingMode,
+                          {StrId::STR_WM_AUTO, StrId::STR_WM_HORIZONTAL, StrId::STR_WM_VERTICAL}, "writingMode",
+                          StrId::STR_CAT_READER)
+            .withTextSettings(),
+        SettingInfo::Value(StrId::STR_VERT_CHAR_SPACING, &CrossPointSettings::verticalCharSpacing, {0, 50, 5},
+                           "verticalCharSpacing", StrId::STR_CAT_READER)
+            .withTextSettings(),
         // Built-in font-family entry. Replaced per-call with a registry-aware
         // version when SD fonts are installed.
         SettingInfo::Enum(StrId::STR_FONT_FAMILY, &CrossPointSettings::fontFamily,

@@ -295,6 +295,8 @@ CrossPointSettings::StatusBarSpec CrossPointSettings::statusBarSpec() const {
 ReaderRenderSpec CrossPointSettings::readerRenderSpec(const uint16_t viewportWidth,
                                                       const uint16_t viewportHeight) const {
   ReaderRenderSpec spec;
+  spec.writingMode = static_cast<WritingMode>(writingMode);
+  spec.verticalCharSpacing = verticalCharSpacing;
   spec.fontId = getReaderFontId();
   spec.lineCompression = getReaderLineCompression();
   spec.characterSpacing = getCharacterSpacing();

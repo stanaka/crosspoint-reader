@@ -355,6 +355,13 @@ class GfxRenderer {
   std::vector<std::string> wrappedText(int fontId, const char* text, int maxWidth, int maxLines,
                                        EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
 
+  int getVerticalCellSize(int fontId, EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;
+  int getVerticalTextAdvance(int fontId, const char* text, EpdFontFamily::Style style, int cellSize, uint8_t spacing,
+                             bool forceSideways = false) const;
+  void drawVerticalToken(int fontId, int x, int y, const char* text, EpdFontFamily::Style style, int cellSize,
+                         uint8_t spacing, bool black = true, bool forceUpright = false,
+                         bool forceSideways = false) const;
+
   // Helper for drawing rotated text (90 degrees clockwise, for side buttons)
   void drawTextRotated90CW(int fontId, int x, int y, const char* text, bool black = true,
                            EpdFontFamily::Style style = EpdFontFamily::REGULAR) const;

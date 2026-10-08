@@ -20,6 +20,7 @@ class Section {
   std::string filePath;
   HalFile file;
 
+  bool verticalMode = false;
   void writeSectionFileHeader(const ReaderRenderSpec& spec);
   uint32_t onPageComplete(std::unique_ptr<Page> page);
 
@@ -86,6 +87,7 @@ class Section {
   explicit Section(const std::shared_ptr<Epub>& epub, int spineIndex, GfxRenderer& renderer);
   ~Section();
   bool loadSectionFile(const ReaderRenderSpec& spec);
+  bool isVertical() const;
   bool clearCache() const;
   bool createSectionFile(const ReaderRenderSpec& spec, const std::function<void()>& popupFn = nullptr);
 

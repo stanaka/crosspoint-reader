@@ -19,6 +19,9 @@ struct BlockStyle {
 
   // Extra pixels between glyphs during layout and drawing.
   int8_t characterSpacing = 0;
+  bool vertical = false;
+  uint16_t verticalCellSize = 0;
+  uint8_t verticalCharSpacing = 10;
   // Spacing (in pixels)
   int16_t marginTop = 0;
   int16_t marginBottom = 0;

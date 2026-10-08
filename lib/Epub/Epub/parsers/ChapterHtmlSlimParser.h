@@ -47,6 +47,11 @@ class ChapterHtmlSlimParser {
   std::string rubyTextBuffer;
   std::unique_ptr<Page> currentPage = nullptr;
   int16_t currentPageNextY = 0;
+  int16_t currentPageNextX = 0;
+  bool verticalInsetApplied = false;
+  WritingMode writingMode = WritingMode::Auto;
+  bool verticalMode = false;
+  uint8_t verticalCharSpacing = 10;
   int fontId;
   float lineCompression;
   bool extraParagraphSpacing;
@@ -221,6 +226,12 @@ class ChapterHtmlSlimParser {
     characterSpacing = character;
     wordSpacingPercent = wordPercent;
   }
+  void setWritingMode(WritingMode mode, uint8_t spacing, bool fallbackVertical = false) {
+    writingMode = mode;
+    verticalMode = mode == WritingMode::Vertical || (mode == WritingMode::Auto && fallbackVertical);
+    verticalCharSpacing = spacing;
+  }
+  bool isVertical() const { return verticalMode; }
   void setParagraphIndentSpaces(const uint8_t spaces) { paragraphIndentSpaces = spaces; }
 
   // One-shot parse: builds every page before returning (begin + step* + finish).

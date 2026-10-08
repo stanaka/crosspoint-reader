@@ -96,7 +96,11 @@ class TextBlock final : public Block {
     const uint16_t end = (i + 1 < numWords) ? textOffArr[i + 1] : textBytes;
     return end - textOffArr[i] - 1;  // exclude the NUL
   }
-  int16_t wordXpos(const uint16_t i) const { return xposArr[i]; }
+  bool isVertical() const { return blockStyle.vertical; }
+  int16_t wordFlowPos(const uint16_t i) const { return xposArr[i]; }
+  int16_t wordXpos(const uint16_t i) const { return isVertical() ? 0 : xposArr[i]; }
+  int16_t wordYpos(const uint16_t i) const { return isVertical() ? xposArr[i] : 0; }
+  int wordFlowExtent(const GfxRenderer& renderer, int fontId, uint16_t i) const;
   EpdFontFamily::Style wordStyle(const uint16_t i) const { return static_cast<EpdFontFamily::Style>(stylesArr[i]); }
   uint8_t focusBoundary(const uint16_t i) const { return focusPresent ? focusBoundaryArr[i] : 0; }
   uint16_t focusSuffixX(const uint16_t i) const { return focusPresent ? focusSuffixXArr[i] : 0; }

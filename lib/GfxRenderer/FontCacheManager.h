@@ -31,7 +31,7 @@ class FontCacheManager {
 
   // Scan-mode API: called by GfxRenderer::drawText() during scan pass
   bool isScanning() const;
-  void recordText(const char* text, int fontId, EpdFontFamily::Style style);
+  void recordText(const char* text, int fontId, EpdFontFamily::Style style, bool vertical = false);
 
   // The FontDecompressor pointer, needed by GfxRenderer::getGlyphBitmap()
   FontDecompressor* getDecompressor() const { return fontDecompressor_; }
@@ -76,6 +76,7 @@ class FontCacheManager {
   int scanFontIds_[MAX_SCAN_FONTS] = {};
   uint32_t scanCodepoints_[MAX_SCAN_CODEPOINTS + 1] = {};
   uint16_t scanGroupCounts_[SCAN_GROUP_COUNT] = {};
+  bool scanVerticalGroups_[SCAN_GROUP_COUNT] = {};
   uint16_t scanCodepointCount_ = 0;
   uint8_t scanFontCount_ = 0;
   bool scanOverflowWarned_ = false;

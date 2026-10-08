@@ -98,6 +98,7 @@ bool Epub::parseContentOpf(BookMetadataCache::BookMetadata& bookMetadata, const 
   bookMetadata.title = utf8ComposeNfc(opfParser.title);
   bookMetadata.author = utf8ComposeNfc(opfParser.author);
   bookMetadata.language = opfParser.language;
+  bookMetadata.pageProgression = opfParser.pageProgression;
 
   if (metadataOnly) {
     LOG_DBG("EBP", "Successfully parsed package metadata");

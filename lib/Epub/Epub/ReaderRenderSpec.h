@@ -1,4 +1,6 @@
 #pragma once
+#include <VerticalText.h>
+
 #include <cstdint>
 
 // The resolved text-rendering configuration a reader hands to the layout
@@ -11,6 +13,8 @@
 // existing in a half-filled state — the 0 defaults below are a last-resort
 // backstop (a 0x0 viewport lays out nothing), not an invitation to omit it.
 struct ReaderRenderSpec {
+  WritingMode writingMode = WritingMode::Auto;
+  uint8_t verticalCharSpacing = 10;
   int fontId = 0;
   float lineCompression = 1.0f;
   bool extraParagraphSpacing = false;

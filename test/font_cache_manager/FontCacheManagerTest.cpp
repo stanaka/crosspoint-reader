@@ -145,3 +145,22 @@ TEST(FontCacheManagerTest, IncrementalPrewarmRequestsAccumulation) {
   ASSERT_EQ(1, font.prewarmCallCount);
   EXPECT_TRUE(font.prewarmCalls[0].accumulate);
 }
+
+TEST(FontCacheManagerTest, VerticalPrewarmIsScopedToTheRequestedFontAndStyle) {
+  SdCardFont font;
+  const std::map<int, EpdFontFamily> noBuiltinFonts;
+  const std::map<int, SdCardFont*> sdFonts{{7, &font}};
+  FontCacheManager manager(noBuiltinFonts, sdFonts, kNoTtfFonts);
+  {
+    auto scope = manager.createPrewarmScope();
+    manager.recordText("。", 7, EpdFontFamily::REGULAR, true);
+    scope.endScanAndPrewarm();
+    EXPECT_EQ(font.verticalPrewarmCalls, 1);
+  }
+  {
+    auto scope = manager.createPrewarmScope();
+    manager.recordText("。", 7, EpdFontFamily::REGULAR);
+    scope.endScanAndPrewarm();
+    EXPECT_EQ(font.verticalPrewarmCalls, 1);
+  }
+}

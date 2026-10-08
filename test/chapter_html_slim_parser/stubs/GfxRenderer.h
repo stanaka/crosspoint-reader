@@ -2,6 +2,7 @@
 
 #include <EpdFontFamily.h>
 #include <Utf8.h>
+#include <VerticalText.h>
 
 #include <deque>
 #include <string>
@@ -12,6 +13,7 @@ enum class BidiBaseDir : signed char { AUTO = -1, LTR = 0, RTL = 1 };
 
 class GfxRenderer {
  public:
+  bool wideBold = false;
   enum class TextMeasureMode { Layout, Rendered };
   // The fixture has no framebuffer to lend; image probes run as without a loan.
   class FrameBufferLoan {
@@ -36,14 +38,14 @@ class GfxRenderer {
   int getLineHeight(int, float = 1.0f) const { return 16; }
   int getFontAscenderSize(int) const { return 12; }
   int getSpaceWidth(int, EpdFontFamily::Style) const { return 4; }
-  int getTextAdvanceX(int, const char* text, EpdFontFamily::Style, int8_t tracking = 0,
+  int getTextAdvanceX(int, const char* text, EpdFontFamily::Style style, int8_t tracking = 0,
                       BidiUtils::BidiBaseDir = BidiUtils::BidiBaseDir::AUTO,
                       TextMeasureMode = TextMeasureMode::Layout) const {
     int width = 0;
     uint32_t previous = 0;
     while (const uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
       if (utf8IsCombiningMark(cp)) continue;
-      width += 8 + trackingBetween(previous, cp, tracking);
+      width += (wideBold && (style & EpdFontFamily::BOLD) ? 12 : 8) + trackingBetween(previous, cp, tracking);
       previous = cp;
     }
     return width;
@@ -54,4 +56,16 @@ class GfxRenderer {
   int getSpaceAdvance(int, uint32_t, uint32_t, EpdFontFamily::Style) const { return 4; }
   bool isSdCardFont(int) const { return false; }
   void ensureSdCardFontReady(int, const char* const*, const size_t*, size_t, bool, bool, uint8_t) const {}
+  int getVerticalCellSize(int, EpdFontFamily::Style = EpdFontFamily::REGULAR) const { return 8; }
+  int getVerticalTextAdvance(int font, const char* text, EpdFontFamily::Style style, int cell, uint8_t spacing,
+                             bool forceSideways = false) const {
+    const auto behavior = forceSideways ? verticalText::Behavior::Sideways : verticalText::classify(text);
+    if (behavior == verticalText::Behavior::TateChuYoko) return cell;
+    if (behavior == verticalText::Behavior::Sideways) return getTextAdvanceX(font, text, style);
+    int count = 0;
+    while (utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) ++count;
+    return count * cell + std::max(0, count - 1) * cell * spacing / 100;
+  }
+  void drawVerticalToken(int, int, int, const char*, EpdFontFamily::Style, int, uint8_t, bool = true, bool = false,
+                         bool = false) const {}
 };

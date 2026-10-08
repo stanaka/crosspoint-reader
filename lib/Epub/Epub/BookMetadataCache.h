@@ -2,6 +2,7 @@
 
 #include <BufferedFile.h>
 #include <HalStorage.h>
+#include <VerticalText.h>
 
 #include <algorithm>
 #include <deque>
@@ -15,6 +16,7 @@ class BookMetadataCache {
     std::string title;
     std::string author;
     std::string language;
+    PageProgression pageProgression = PageProgression::Default;
     std::string coverItemHref;
     std::string textReferenceHref;
   };

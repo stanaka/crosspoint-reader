@@ -138,7 +138,7 @@ uint8_t FontCacheManager::resolveScanStyle(int fontId, EpdFontFamily::Style styl
   return baseStyle;
 }
 
-void FontCacheManager::recordText(const char* text, int fontId, EpdFontFamily::Style style) {
+void FontCacheManager::recordText(const char* text, int fontId, EpdFontFamily::Style style, bool vertical) {
   if (!text || *text == '\0') return;
 
   uint8_t fontSlot = scanFontCount_;
@@ -155,6 +155,7 @@ void FontCacheManager::recordText(const char* text, int fontId, EpdFontFamily::S
 
   const uint8_t resolvedStyle = resolveScanStyle(fontId, style);
   const uint8_t group = fontSlot * 4 + resolvedStyle;
+  scanVerticalGroups_[group] |= vertical;
   const unsigned char* cursor = reinterpret_cast<const unsigned char*>(text);
   while (*cursor) {
     const uint32_t codepoint = utf8NextCodepoint(&cursor);
@@ -195,6 +196,7 @@ FontCacheManager::PrewarmScope::PrewarmScope(FontCacheManager& manager) : manage
   manager_->scanFontCount_ = 0;
   manager_->scanOverflowWarned_ = false;
   memset(manager_->scanGroupCounts_, 0, sizeof(manager_->scanGroupCounts_));
+  memset(manager_->scanVerticalGroups_, 0, sizeof(manager_->scanVerticalGroups_));
 }
 
 void FontCacheManager::PrewarmScope::endScanAndPrewarm() {
@@ -228,11 +230,16 @@ void FontCacheManager::PrewarmScope::endScanAndPrewarm() {
     const uint8_t style = static_cast<uint8_t>(group) & 0x03;
     // This group is the complete glyph set for one font/style in this render.
     manager_->prewarmCache(manager_->scanFontIds_[fontSlot], utf8Text, 1 << style, /*accumulate=*/false);
+    if (manager_->scanVerticalGroups_[group]) {
+      const auto font = manager_->sdCardFonts_.find(manager_->scanFontIds_[fontSlot]);
+      if (font != manager_->sdCardFonts_.end() && font->second) font->second->prewarmVertical(utf8Text, style);
+    }
   }
 
   manager_->scanCodepointCount_ = 0;
   manager_->scanFontCount_ = 0;
   memset(manager_->scanGroupCounts_, 0, sizeof(manager_->scanGroupCounts_));
+  memset(manager_->scanVerticalGroups_, 0, sizeof(manager_->scanVerticalGroups_));
 }
 
 FontCacheManager::PrewarmScope::~PrewarmScope() {
