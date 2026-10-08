@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "lib/GfxRenderer/GlyphBitmap.h"
+#include "lib/GfxRenderer/VerticalText.h"
 
 namespace {
 constexpr int PANEL_WIDTH = 40;
@@ -123,4 +124,38 @@ TEST(GlyphBitmap, EmptyAndFullyClippedGlyphsDoNotWrite) {
       compare(orientation, rotation, true, Plane::BW, true, 11, 9, 0, 0, 0, 32, {12, 10, 15, 20});
     }
   }
+}
+
+TEST(GlyphBitmap, VerticalSidewaysPlacementMatchesClockwiseRotationOfCenteredLineBox) {
+  for (int cellSize : {20, 21, 42}) {
+    for (const auto [ascender, descender] : {std::pair{45, -12}, std::pair{37, -5}, std::pair{18, -3}}) {
+      for (const auto [left, top] : {std::pair{23, 35}, std::pair{4, 18}, std::pair{3, 18}, std::pair{-2, 10}}) {
+        const auto frame = verticalText::sidewaysGlyphFrame(7, 11, cellSize, ascender, descender, left, top);
+        const int lineHeight = ascender - descender;
+        const int horizontalTop = (cellSize - lineHeight) / 2 + ascender - top;
+        for (int gy = 0; gy < 13; ++gy) {
+          for (int gx = 0; gx < 15; ++gx) {
+            const int rotatedX = 7 + cellSize - 1 - (horizontalTop + gy);
+            const int rotatedY = 11 + left + gx;
+            // The device orientation is a separate transform applied after glyph rotation.
+            for (int orientation = 0; orientation < 4; ++orientation) {
+              EXPECT_EQ(physical(orientation, rotatedX, rotatedY),
+                        physical(orientation, frame.x + gx * frame.dxX + gy * frame.dyX,
+                                 frame.y + gx * frame.dxY + gy * frame.dyY));
+            }
+          }
+        }
+      }
+    }
+  }
+}
+
+TEST(GlyphBitmap, VerticalFallbackLongVowelMarkStaysAtColumnCenter) {
+  // Arial Unicode at 20pt/150dpi: 42px em, 45px ascender, -12px descender,
+  // horizontal long-vowel bitmap at (3, baseline - 18), measuring 36x4.
+  const auto frame = verticalText::sidewaysGlyphFrame(0, 0, 42, 45, -12, 3, 18);
+  EXPECT_EQ(frame.x, 21);
+  EXPECT_EQ(frame.x + 3 * frame.dyX, 18);
+  EXPECT_EQ(frame.y, 3);
+  EXPECT_EQ(frame.y + 35 * frame.dxY, 38);
 }

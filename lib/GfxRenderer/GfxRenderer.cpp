@@ -2646,7 +2646,7 @@ void GfxRenderer::drawVerticalToken(const int fontId, const int x, const int y, 
     const int advance = fp4::toPixel(static_cast<int32_t>(glyph->advanceX) * scale / 256);
     glyphBitmap::Frame frame;
     if (sideways) {
-      frame = {x + (cellSize - ascender + descender) / 2 + top - 1, y + drawCursor + left, 0, 1, -1, 0};
+      frame = verticalText::sidewaysGlyphFrame(x, y + drawCursor, cellSize, ascender, descender, left, top);
     } else if (behavior == verticalText::Behavior::TateChuYoko) {
       frame = {x + (cellSize - std::min(cellSize, textWidth)) / 2 + drawCursor + left,
                y + (cellSize - ascender + descender) / 2 + ascender - top,

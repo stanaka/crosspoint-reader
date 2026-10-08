@@ -3,11 +3,21 @@
 #include <cstdint>
 #include <string_view>
 
+#include "GlyphBitmap.h"
+
 enum class WritingMode : uint8_t { Auto, Horizontal, Vertical };
 enum class PageProgression : uint8_t { Default, Ltr, Rtl };
 
 namespace verticalText {
 enum class Behavior : uint8_t { Upright, Sideways, TateChuYoko };
+
+constexpr glyphBitmap::Frame sidewaysGlyphFrame(int x, int y, int cellSize, int ascender, int descender, int left,
+                                                int top) {
+  const int baseline = (cellSize - ascender + descender) / 2 + ascender;
+  // Rotate the centered horizontal line box clockwise: (u, v) -> (cellSize - 1 - v, u).
+  return {x + cellSize - 1 - baseline + top, y + left, 0, 1, -1, 0};
+}
+
 struct PageButtons {
   bool prev;
   bool next;
