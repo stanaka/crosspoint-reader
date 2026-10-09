@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstdlib>
 #include <utility>
 #include <vector>
 
@@ -158,4 +159,44 @@ TEST(GlyphBitmap, VerticalFallbackLongVowelMarkStaysAtColumnCenter) {
   EXPECT_EQ(frame.x + 3 * frame.dyX, 18);
   EXPECT_EQ(frame.y, 3);
   EXPECT_EQ(frame.y + 35 * frame.dxY, 38);
+}
+
+TEST(GlyphBitmap, VerticalSmallKanaUsesCenteredRightAlignedPlacement) {
+  // Arial Unicode at 20pt/150dpi: 42px em, small tsu 26x20, small ke 27x27.
+  EXPECT_TRUE(verticalText::smallKana(0x3063));
+  EXPECT_TRUE(verticalText::smallKana(0x30f6));
+  EXPECT_FALSE(verticalText::smallKana(0x3064));
+  EXPECT_FALSE(verticalText::smallKana(0x30b1));
+  const auto tsu = verticalText::smallKanaGlyphFrame(0, 0, 42, 26, 20);
+  EXPECT_EQ(tsu.x, 16);
+  EXPECT_EQ(tsu.y, 11);
+  const auto ke = verticalText::smallKanaGlyphFrame(0, 0, 42, 27, 27);
+  EXPECT_EQ(ke.x, 15);
+  EXPECT_EQ(ke.y, 7);
+}
+
+TEST(GlyphBitmap, VerticalSmallKanaCentersOddAndScaledGlyphsAcrossOrientations) {
+  for (const auto [cellSize, width, height] :
+       {std::array{25, 16, 12}, std::array{25, 17, 16}, std::array{42, 13, 10}, std::array{42, 14, 14},
+        std::array{21, 13, 10}, std::array{21, 14, 14}}) {
+    for (const auto [x, y] : {std::pair{0, 0}, std::pair{7, 11}}) {
+      SCOPED_TRACE(::testing::Message() << cellSize << ',' << width << ',' << height << " at=" << x << ',' << y);
+      const auto frame = verticalText::smallKanaGlyphFrame(x, y, cellSize, width, height);
+      EXPECT_EQ(frame.x + width, x + cellSize);
+      EXPECT_EQ(frame.dxX, 1);
+      EXPECT_EQ(frame.dxY, 0);
+      EXPECT_EQ(frame.dyX, 0);
+      EXPECT_EQ(frame.dyY, 1);
+      for (int orientation = 0; orientation < 4; ++orientation) {
+        const auto [cellTopX, cellTopY] = physical(orientation, frame.x, y);
+        const auto [cellBottomX, cellBottomY] = physical(orientation, frame.x, y + cellSize - 1);
+        const auto [glyphTopX, glyphTopY] = physical(orientation, frame.x, frame.y);
+        const auto [glyphBottomX, glyphBottomY] =
+            physical(orientation, frame.x + (height - 1) * frame.dyX, frame.y + (height - 1) * frame.dyY);
+        // Twice the physical center differs by at most one pixel for odd padding.
+        EXPECT_LE(std::abs(glyphTopX + glyphBottomX - cellTopX - cellBottomX), 1);
+        EXPECT_LE(std::abs(glyphTopY + glyphBottomY - cellTopY - cellBottomY), 1);
+      }
+    }
+  }
 }
