@@ -1,5 +1,6 @@
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdlib>
 #include <utility>
@@ -196,6 +197,58 @@ TEST(GlyphBitmap, VerticalSmallKanaCentersOddAndScaledGlyphsAcrossOrientations) 
         // Twice the physical center differs by at most one pixel for odd padding.
         EXPECT_LE(std::abs(glyphTopX + glyphBottomX - cellTopX - cellBottomX), 1);
         EXPECT_LE(std::abs(glyphTopY + glyphBottomY - cellTopY - cellBottomY), 1);
+      }
+    }
+  }
+}
+
+TEST(GlyphBitmap, VerticalEllipsisPrefersPresentationThenAlternateThenRotation) {
+  EXPECT_EQ(verticalText::presentationCodepoint(0x2026), 0xfe19U);
+  EXPECT_EQ(verticalText::presentationCodepoint(0xfe19), 0xfe19U);
+  for (uint32_t cp : {0x2025U, 0x22efU, 0x2eU, 0x30fcU}) {
+    EXPECT_EQ(verticalText::presentationCodepoint(cp), cp);
+    EXPECT_FALSE(verticalText::ellipsis(cp));
+  }
+  EXPECT_TRUE(verticalText::ellipsis(0x2026));
+  EXPECT_TRUE(verticalText::ellipsis(0xfe19));
+  EXPECT_EQ(verticalText::classify("…"), verticalText::Behavior::Upright);
+  EXPECT_EQ(verticalText::classify("︙"), verticalText::Behavior::Upright);
+  using Form = verticalText::EllipsisForm;
+  EXPECT_EQ(verticalText::ellipsisForm(true, true), Form::Presentation);
+  EXPECT_EQ(verticalText::ellipsisForm(true, false), Form::Presentation);
+  EXPECT_EQ(verticalText::ellipsisForm(false, true), Form::Alternate);
+  EXPECT_EQ(verticalText::ellipsisForm(false, false), Form::Rotated);
+}
+
+TEST(GlyphBitmap, VerticalEllipsisVisibleBoundsStayCenteredAcrossScalesAndOrientations) {
+  for (int cell : {20, 21, 42}) {
+    for (int scale : {128, 193, 256}) {
+      for (bool sideways : {false, true}) {
+        const int width = ((sideways ? 17 : 3) * scale + 255) / 256;
+        const int height = ((sideways ? 3 : 17) * scale + 255) / 256;
+        const auto frame = verticalText::centeredGlyphFrame(7, 11, cell, width, height, sideways);
+        EXPECT_EQ(frame.dxX, sideways ? 0 : 1);
+        EXPECT_EQ(frame.dxY, sideways ? 1 : 0);
+        EXPECT_EQ(frame.dyX, sideways ? -1 : 0);
+        EXPECT_EQ(frame.dyY, sideways ? 0 : 1);
+        for (int orientation = 0; orientation < 4; ++orientation) {
+          int minX = 1000, minY = 1000, maxX = -1000, maxY = -1000;
+          for (int gy = 0; gy < height; ++gy) {
+            for (int gx = 0; gx < width; ++gx) {
+              const auto [px, py] = physical(orientation, frame.x + gx * frame.dxX + gy * frame.dyX,
+                                             frame.y + gx * frame.dxY + gy * frame.dyY);
+              minX = std::min(minX, px);
+              maxX = std::max(maxX, px);
+              minY = std::min(minY, py);
+              maxY = std::max(maxY, py);
+            }
+          }
+          const auto [startX, startY] = physical(orientation, 7, 11);
+          const auto [endX, endY] = physical(orientation, 7 + cell - 1, 11 + cell - 1);
+          // Odd padding may bias either edge by at most one pixel.
+          EXPECT_LE(std::abs(minX + maxX - startX - endX), 1);
+          EXPECT_LE(std::abs(minY + maxY - startY - endY), 1);
+        }
       }
     }
   }

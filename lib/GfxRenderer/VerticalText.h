@@ -11,6 +11,22 @@ enum class PageProgression : uint8_t { Default, Ltr, Rtl };
 namespace verticalText {
 enum class Behavior : uint8_t { Upright, Sideways, TateChuYoko };
 
+constexpr uint32_t presentationCodepoint(uint32_t cp) { return cp == 0x2026 ? 0xfe19 : cp; }
+
+constexpr bool ellipsis(uint32_t cp) { return cp == 0x2026 || cp == 0xfe19; }
+
+enum class EllipsisForm : uint8_t { Presentation, Alternate, Rotated };
+constexpr EllipsisForm ellipsisForm(bool hasPresentation, bool hasAlternate) {
+  return hasPresentation ? EllipsisForm::Presentation : hasAlternate ? EllipsisForm::Alternate : EllipsisForm::Rotated;
+}
+
+constexpr glyphBitmap::Frame centeredGlyphFrame(int x, int y, int cellSize, int width, int height, bool sideways) {
+  if (sideways) {
+    return {x + (cellSize - height) / 2 + height - 1, y + (cellSize - width) / 2, 0, 1, -1, 0};
+  }
+  return {x + (cellSize - width) / 2, y + (cellSize - height) / 2, 1, 0, 0, 1};
+}
+
 constexpr glyphBitmap::Frame smallKanaGlyphFrame(int x, int y, int cellSize, int width, int height) {
   return {x + cellSize - width, y + (cellSize - height) / 2, 1, 0, 0, 1};
 }

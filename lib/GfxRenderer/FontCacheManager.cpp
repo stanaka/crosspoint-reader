@@ -5,6 +5,7 @@
 #include <SdCardFont.h>
 #include <TtfEpdFont.h>
 #include <Utf8.h>
+#include <VerticalText.h>
 
 #include <algorithm>
 #include <cstring>
@@ -160,29 +161,35 @@ void FontCacheManager::recordText(const char* text, int fontId, EpdFontFamily::S
   while (*cursor) {
     const uint32_t codepoint = utf8NextCodepoint(&cursor);
     if (codepoint == 0) break;
-
-    const uint32_t packed = (static_cast<uint32_t>(fontSlot) << SCAN_FONT_SHIFT) |
-                            (static_cast<uint32_t>(resolvedStyle) << SCAN_STYLE_SHIFT) | codepoint;
-    bool found = false;
-    for (uint16_t i = 0; i < scanCodepointCount_; i++) {
-      if (scanCodepoints_[i] == packed) {
-        found = true;
-        break;
+    const uint32_t presentation = !vertical             ? codepoint
+                                  : codepoint == 0xfe19 ? 0x2026
+                                                        : verticalText::presentationCodepoint(codepoint);
+    // Keep source glyphs for the vertical-alternate and rotated fallback paths.
+    for (int candidate = 0; candidate < (presentation != codepoint ? 2 : 1); ++candidate) {
+      const uint32_t packed = (static_cast<uint32_t>(fontSlot) << SCAN_FONT_SHIFT) |
+                              (static_cast<uint32_t>(resolvedStyle) << SCAN_STYLE_SHIFT) |
+                              (candidate == 0 ? codepoint : presentation);
+      bool found = false;
+      for (uint16_t i = 0; i < scanCodepointCount_; i++) {
+        if (scanCodepoints_[i] == packed) {
+          found = true;
+          break;
+        }
       }
-    }
-    if (found) continue;
+      if (found) continue;
 
-    if (scanCodepointCount_ >= MAX_SCAN_CODEPOINTS) {
-      if (!scanOverflowWarned_) {
-        LOG_DBG("FCM", "Scan codepoint cap (%u) reached; excess glyphs will load on demand",
-                static_cast<unsigned>(MAX_SCAN_CODEPOINTS));
-        scanOverflowWarned_ = true;
+      if (scanCodepointCount_ >= MAX_SCAN_CODEPOINTS) {
+        if (!scanOverflowWarned_) {
+          LOG_DBG("FCM", "Scan codepoint cap (%u) reached; excess glyphs will load on demand",
+                  static_cast<unsigned>(MAX_SCAN_CODEPOINTS));
+          scanOverflowWarned_ = true;
+        }
+        continue;
       }
-      continue;
-    }
 
-    scanCodepoints_[scanCodepointCount_++] = packed;
-    scanGroupCounts_[group]++;
+      scanCodepoints_[scanCodepointCount_++] = packed;
+      scanGroupCounts_[group]++;
+    }
   }
 }
 
