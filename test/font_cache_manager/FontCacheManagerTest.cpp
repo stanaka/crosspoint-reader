@@ -164,3 +164,62 @@ TEST(FontCacheManagerTest, VerticalPrewarmIsScopedToTheRequestedFontAndStyle) {
     EXPECT_EQ(font.verticalPrewarmCalls, 1);
   }
 }
+
+TEST(FontCacheManagerTest, VerticalEllipsisScanKeepsSourceAndPresentationWithoutAllocations) {
+  SdCardFont font;
+  const std::map<int, EpdFontFamily> noBuiltinFonts;
+  const std::map<int, SdCardFont*> sdFonts{{7, &font}};
+  FontCacheManager manager(noBuiltinFonts, sdFonts, kNoTtfFonts);
+
+  heapAllocationCount = 0;
+  countHeapAllocations = true;
+  {
+    auto scope = manager.createPrewarmScope();
+    manager.recordText("……", 7, EpdFontFamily::REGULAR);
+    // A previously recorded horizontal source must still acquire its vertical form.
+    manager.recordText("……︙", 7, EpdFontFamily::REGULAR, true);
+    scope.endScanAndPrewarm();
+  }
+  countHeapAllocations = false;
+
+  EXPECT_EQ(heapAllocationCount, 0U);
+  ASSERT_EQ(font.prewarmCallCount, 1);
+  EXPECT_STREQ(font.prewarmCalls[0].text, "…︙");
+  EXPECT_EQ(font.verticalPrewarmCalls, 1);
+}
+
+TEST(FontCacheManagerTest, EllipsisSubstitutionIsScopedToVerticalFontAndStyle) {
+  SdCardFont font;
+  SdCardFont secondFont;
+  const std::map<int, EpdFontFamily> noBuiltinFonts;
+  const std::map<int, SdCardFont*> sdFonts{{7, &font}, {8, &secondFont}};
+  FontCacheManager manager(noBuiltinFonts, sdFonts, kNoTtfFonts);
+
+  auto scope = manager.createPrewarmScope();
+  manager.recordText("…", 7, EpdFontFamily::REGULAR);
+  manager.recordText("…", 7, EpdFontFamily::BOLD, true);
+  manager.recordText("…", 8, EpdFontFamily::REGULAR);
+  scope.endScanAndPrewarm();
+
+  ASSERT_EQ(font.prewarmCallCount, 2);
+  ASSERT_NE(findCall(font, 1), nullptr);
+  ASSERT_NE(findCall(font, 2), nullptr);
+  EXPECT_STREQ(findCall(font, 1)->text, "…");
+  EXPECT_STREQ(findCall(font, 2)->text, "…︙");
+  ASSERT_EQ(secondFont.prewarmCallCount, 1);
+  EXPECT_STREQ(secondFont.prewarmCalls[0].text, "…");
+  EXPECT_EQ(font.verticalPrewarmCalls, 1);
+  EXPECT_EQ(secondFont.verticalPrewarmCalls, 0);
+}
+
+TEST(FontCacheManagerTest, LiteralVerticalEllipsisScanAlsoWarmsItsFallback) {
+  SdCardFont font;
+  const std::map<int, EpdFontFamily> noBuiltinFonts;
+  const std::map<int, SdCardFont*> sdFonts{{7, &font}};
+  FontCacheManager manager(noBuiltinFonts, sdFonts, kNoTtfFonts);
+  auto scope = manager.createPrewarmScope();
+  manager.recordText("︙", 7, EpdFontFamily::REGULAR, true);
+  scope.endScanAndPrewarm();
+  ASSERT_EQ(font.prewarmCallCount, 1);
+  EXPECT_STREQ(font.prewarmCalls[0].text, "…︙");
+}

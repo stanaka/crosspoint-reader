@@ -2575,8 +2575,11 @@ void GfxRenderer::drawVerticalToken(const int fontId, const int x, const int y, 
                                     const bool black, const bool forceUpright, const bool forceSideways) const {
   if (!text || !*text) return;
   const int resolved = resolveTextFontId(fontId, text, style);
+  const auto behavior = forceUpright    ? verticalText::Behavior::Upright
+                        : forceSideways ? verticalText::Behavior::Sideways
+                                        : verticalText::classify(text);
   if (isFontCacheScanning()) {
-    fontCacheManager_->recordText(text, resolved, style, !forceUpright);
+    fontCacheManager_->recordText(text, resolved, style, behavior == verticalText::Behavior::Upright);
     return;
   }
   if (resolved != fontId) ensureSdGlyphsResident(resolved, text, style, false);
@@ -2593,9 +2596,6 @@ void GfxRenderer::drawVerticalToken(const int fontId, const int x, const int y, 
 
   const auto* data = font.getData(style);
   if (!data) return;
-  const auto behavior = forceUpright    ? verticalText::Behavior::Upright
-                        : forceSideways ? verticalText::Behavior::Sideways
-                                        : verticalText::classify(text);
   int scale = (style & (EpdFontFamily::SUP | EpdFontFamily::SUB)) != 0 ? 128 : 256;
   if (forceUpright) scale = std::max(1, std::min(scale, cellSize * 256 / getVerticalCellSize(fontId)));
   int textWidth = behavior == verticalText::Behavior::TateChuYoko ? getTextAdvanceX(resolved, text, style) : 0;
@@ -2616,16 +2616,26 @@ void GfxRenderer::drawVerticalToken(const int fontId, const int x, const int y, 
   uint32_t previous = 0;
   while (uint32_t cp = utf8NextCodepoint(reinterpret_cast<const uint8_t**>(&text))) {
     if (behavior != verticalText::Behavior::Upright && !advanceOnly) cp = font.applyLigatures(cp, text, style);
+    const bool isEllipsis = behavior == verticalText::Behavior::Upright && verticalText::ellipsis(cp);
+    const EpdGlyph* presentation = nullptr;
+    if (isEllipsis) {
+      const uint32_t presentationCp = verticalText::presentationCodepoint(cp);
+      if (font.hasCodepoint(presentationCp, style)) presentation = font.getGlyph(presentationCp, style);
+      cp = 0x2026;
+    }
     const EpdGlyph* alternate = nullptr;
-    if (behavior == verticalText::Behavior::Upright && sd != sdCardFonts_.end() && sd->second)
+    if (behavior == verticalText::Behavior::Upright && !presentation && sd != sdCardFonts_.end() && sd->second)
       alternate = sd->second->getVerticalGlyph(cp, static_cast<uint8_t>(style));
     EpdGlyph fallback;
-    const auto* glyph = alternate ? alternate : font.getGlyphMetrics(cp, fallback, style);
+    const auto form = verticalText::ellipsisForm(presentation != nullptr, alternate != nullptr);
+    const auto* glyph = form == verticalText::EllipsisForm::Presentation ? presentation
+                        : form == verticalText::EllipsisForm::Alternate  ? alternate
+                                                                         : font.getGlyphMetrics(cp, fallback, style);
     if (!glyph) continue;
     const bool sideways =
         behavior == verticalText::Behavior::Sideways ||
-        (behavior == verticalText::Behavior::Upright && !alternate && verticalText::alternate(cp) && cp != 0x3001 &&
-         cp != 0x3002 && cp != 0xff0c && cp != 0xff0e && cp != 0xff01 && cp != 0xff1f);
+        (behavior == verticalText::Behavior::Upright && !presentation && !alternate && verticalText::alternate(cp) &&
+         cp != 0x3001 && cp != 0x3002 && cp != 0xff0c && cp != 0xff0e && cp != 0xff01 && cp != 0xff1f);
     const bool combining = utf8IsCombiningMark(cp);
     if (previous && behavior != verticalText::Behavior::Upright && !combining) {
       if (advanceOnly) {
@@ -2645,7 +2655,9 @@ void GfxRenderer::drawVerticalToken(const int fontId, const int x, const int y, 
     const int descender = data->descender * scale / 256;
     const int advance = fp4::toPixel(static_cast<int32_t>(glyph->advanceX) * scale / 256);
     glyphBitmap::Frame frame;
-    if (sideways) {
+    if (isEllipsis) {
+      frame = verticalText::centeredGlyphFrame(x, y + drawCursor, cellSize, w, h, sideways);
+    } else if (sideways) {
       frame = verticalText::sidewaysGlyphFrame(x, y + drawCursor, cellSize, ascender, descender, left, top);
     } else if (behavior == verticalText::Behavior::TateChuYoko) {
       frame = {x + (cellSize - std::min(cellSize, textWidth)) / 2 + drawCursor + left,

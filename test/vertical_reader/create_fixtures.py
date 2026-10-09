@@ -22,7 +22,11 @@ def create(output, language, progression, body_class):
     text = '<p>' + paragraph * 200 + '</p>'
     chapter = ('<?xml version="1.0" encoding="utf-8"?><html xmlns="http://www.w3.org/1999/xhtml">'
                '<head><title>Vertical reader fixture</title><link rel="stylesheet" href="style.css"/></head>'
-               f'<body class="{body_class}"><h1>縦書き検証</h1>{text}'
+               f'<body class="{body_class}"><h1>縦書き検証</h1>'
+               '<p>三点リーダー「…」「……」「︙」と普通の点「...」。'
+               '<b>太字…</b><i>斜体……</i><b><i>太字斜体︙</i></b>。'
+               '<ruby>省略<rt>…</rt></ruby><ruby>省略<rt>……</rt></ruby><ruby>省略<rt>︙</rt></ruby>。</p>'
+               f'{text}'
                '<p><ruby>一二三四五六七八九十<rt>いちにさんしごろくななはちきゅうじゅう</rt></ruby></p>'
                '<table><tr><td>第一列</td><td>第二列</td></tr><tr><td>三</td><td>四</td></tr></table>'
                '<p><img src="check.png" alt="checkerboard"/></p><p id="note">リンク先の注釈。</p></body></html>')
