@@ -2661,7 +2661,9 @@ void GfxRenderer::drawVerticalToken(const int fontId, const int x, const int y, 
                0,
                0,
                1};
-      if (!alternate && (cp == 0x3001 || cp == 0x3002 || cp == 0xff0c || cp == 0xff0e || verticalText::smallKana(cp)))
+      if (!alternate && verticalText::smallKana(cp))
+        frame = verticalText::smallKanaGlyphFrame(x, y + drawCursor, cellSize, w, h);
+      else if (!alternate && (cp == 0x3001 || cp == 0x3002 || cp == 0xff0c || cp == 0xff0e))
         frame = {x + cellSize - w, y + drawCursor, 1, 0, 0, 1};
     }
     if (glyph == &fallback) {

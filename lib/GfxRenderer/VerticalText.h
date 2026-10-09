@@ -11,6 +11,10 @@ enum class PageProgression : uint8_t { Default, Ltr, Rtl };
 namespace verticalText {
 enum class Behavior : uint8_t { Upright, Sideways, TateChuYoko };
 
+constexpr glyphBitmap::Frame smallKanaGlyphFrame(int x, int y, int cellSize, int width, int height) {
+  return {x + cellSize - width, y + (cellSize - height) / 2, 1, 0, 0, 1};
+}
+
 constexpr glyphBitmap::Frame sidewaysGlyphFrame(int x, int y, int cellSize, int ascender, int descender, int left,
                                                 int top) {
   const int baseline = (cellSize - ascender + descender) / 2 + ascender;

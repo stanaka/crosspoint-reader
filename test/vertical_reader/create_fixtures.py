@@ -15,7 +15,8 @@ def image():
 
 
 def create(output, language, progression, body_class):
-    paragraph = ('「日本語の縦書き。」小さい文字ぁっゃと長音ー、句読点。'
+    paragraph = ('「日本語の縦書き。」小さい文字ぁっゃヶ、比較つっケヶと長音ー、句読点。'
+                 '<ruby>比較<rt>つっケヶ</rt></ruby>'
                  '<ruby>東京都<rt>とうきょうと</rt></ruby>12年、123年、ABCとlongsidewaysword。'
                  '<a href="#note">内部リンク</a>')
     text = '<p>' + paragraph * 200 + '</p>'
